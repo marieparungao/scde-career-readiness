@@ -1,162 +1,218 @@
 # ============================================================
-# DOWNLOAD PROJECT DATA
+# 00: DOWNLOAD AND VALIDATE PROJECT DATA
 # ============================================================
-# Purpose: Download public SCDE datasets needed for the
-# career-readiness project.
+# Purpose: Download and verify SCDE source data for
+# academic years 2022-23 through 2025-26.
 #
-# Run this script before the data-building scripts.
-# Files already downloaded will be skipped.
+# All files are saved in data/raw/ with academic-year names.
+# Existing files are validated rather than downloaded again.
+#
+# Run this script before building any datasets.
 # ============================================================
 
 
-# STEP 1: Identify academic years and source locations
+# STEP 1: Define academic years and source URLs
 
 years <- c("2022-23", "2023-24", "2024-25", "2025-26")
 
-# Official report-card download directories
-report_base <- c(
-  "https://screportcards.ed.sc.gov/files/2023/data-files/",
-  "https://screportcards.ed.sc.gov/files/2024/data-files/",
-  "https://screportcards.ed.sc.gov/files/2025/data-files/",
-  "https://screportcards.ed.sc.gov/files/2026/data-files/"
+# Report-card file directories use the END of the academic year
+report_base <- paste0(
+  "https://screportcards.ed.sc.gov/files/",
+  as.integer(substr(years, 1, 4)) + 1,
+  "/data-files/"
 )
 
-
-# STEP 2: Identify researcher workbooks
-
-researcher_files <- data.frame(
-  filename = paste0(
-    "ReportCardData_forResearchers", years, ".xlsx"
+# Report-card download links
+researcher_urls <- paste0(
+  report_base,
+  ifelse(
+    years == "2025-26",
+    "report-card-data-for-researchers-",
+    "report-cards-data-for-researchers-"
   ),
-  url = paste0(report_base, c(
-    "report-cards-data-for-researchers-2022-23/",
-    "report-cards-data-for-researchers-2023-24/",
-    "report-cards-data-for-researchers-2024-25/",
-    "report-card-data-for-researchers-2025-26/"
-  ))
+  years, "/"
 )
 
-
-# NOTE: The 2025-26 Additional Information workbook may
-# encounter an SSL error during automatic downloading.
-# If this occurs, follow the manual instructions in Step 7.
-
-# STEP 3: Identify additional-information workbooks
-
-additional_files <- data.frame(
-  filename = paste0(
-    "ReportCardData_AdditionalInfo", years, ".xlsx"
+additional_urls <- paste0(
+  report_base,
+  ifelse(
+    years == "2025-26",
+    "report-card-data-additional-info-for-",
+    "report-cards-data-additional-info-for-"
   ),
-  url = paste0(report_base, c(
-    "report-cards-data-additional-info-for-2022-23/",
-    "report-cards-data-additional-info-for-2023-24/",
-    "report-cards-data-additional-info-for-2024-25/",
-    "report-card-data-additional-info-for-2025-26/"
-  ))
+  years, "/"
 )
 
-
-# STEP 4: Identify 135-day school headcount workbooks
-
+# Headcount download links vary slightly across years
 headcount_base <- paste0(
   "https://www.ed.sc.gov/data/other/student-counts/",
   "active-student-headcounts/"
 )
 
-headcount_files <- data.frame(
-  filename = paste0("Headcount135_", years, ".xlsx"),
-  url = paste0(headcount_base, c(
-    paste0(
-      "2022-23-active-student-headcounts/",
-      "135-day-school-headcount-by-gender-ethnicity-",
-      "and-pupils-in-poverty-2022-23/"
-    ),
-    paste0(
-      "2023-24-active-student-headcounts/",
-      "school-headcount-by-gender-ethnicity-",
-      "and-pupils-in-poverty/"
-    ),
-    paste0(
-      "2024-25-active-student-headcounts/",
-      "135-day-school-headcount-by-gender-ethnicity-",
-      "and-pupils-in-poverty/"
-    ),
-    paste0(
-      "2025-26-active-student-headcounts/",
-      "135-day-school-headcount-by-gender-ethnicity-",
-      "and-pupils-in-poverty/"
-    )
-  ))
+headcount_paths <- c(
+  "135-day-school-headcount-by-gender-ethnicity-and-pupils-in-poverty-2022-23/",
+  "school-headcount-by-gender-ethnicity-and-pupils-in-poverty/",
+  "135-day-school-headcount-by-gender-ethnicity-and-pupils-in-poverty/",
+  "135-day-school-headcount-by-gender-ethnicity-and-pupils-in-poverty/"
+)
+
+headcount_urls <- paste0(
+  headcount_base,
+  years, "-active-student-headcounts/",
+  headcount_paths
 )
 
 
-# STEP 5: Download any files not already saved
+# STEP 2: Create one list of required files
 
-downloads <- rbind(
-  researcher_files,
-  additional_files,
-  headcount_files
+downloads <- data.frame(
+  year = rep(years, 3),
+  type = rep(
+    c("researcher", "additional", "headcount"),
+    each = length(years)
+  ),
+  filename = c(
+    paste0("ReportCardData_forResearchers", years, ".xlsx"),
+    paste0("ReportCardData_AdditionalInfo", years, ".xlsx"),
+    paste0("Headcount135_", years, ".xlsx")
+  ),
+  url = c(researcher_urls, additional_urls, headcount_urls)
 )
 
 dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
 
-for (i in seq_len(nrow(downloads))) {
+
+# STEP 3: Function to validate each workbook
+
+validate_file <- function(file, type, year) {
   
-  destination <- file.path("data/raw", downloads$filename[i])
+  # Confirm the file is a readable Excel workbook
+  readxl::excel_sheets(file)
   
-  if (file.exists(destination)) {
-    cat("Already downloaded:", downloads$filename[i], "\n")
-    next
-  }
+  start_year <- as.integer(substr(year, 1, 4))
+  report_year <- start_year + 1L
   
-  tryCatch({
+  if (type == "headcount") {
     
-    download.file(
-      downloads$url[i],
-      destfile = destination,
-      mode = "wb",
-      quiet = TRUE
+    # Verify the internal year and 135-day snapshot
+    title <- readxl::read_excel(
+      file,
+      sheet = "school by gender race pip",
+      range = "A2",
+      col_names = FALSE,
+      col_types = "text"
+    )[[1]][1]
+    
+    if (is.na(title) ||
+        !grepl(as.character(start_year), title) ||
+        !grepl(as.character(report_year), title) ||
+        !grepl("135.Day", title, ignore.case = TRUE)) {
+      stop("Incorrect headcount year or snapshot")
+    }
+    
+  } else {
+    
+    # Verify the report-card year inside the workbook
+    sheet <- if (type == "researcher") {
+      "4.CollegeCareer"
+    } else {
+      "5b.SchoolClimate_ChronicAbs"
+    }
+    
+    sample <- readxl::read_excel(
+      file,
+      sheet = sheet,
+      n_max = 1,
+      col_types = "text"
     )
     
-    # Confirm that the downloaded file is a readable Excel workbook
-    readxl::excel_sheets(destination)
-    
-    cat("Downloaded:", downloads$filename[i], "\n")
-    
-  }, error = function(e) {
-    
-    # Delete incomplete or invalid downloads
-    if (file.exists(destination)) file.remove(destination)
-    
-    cat("DOWNLOAD FAILED:", downloads$filename[i], "\n")
-    cat("Reason:", conditionMessage(e), "\n")
-  })
+    if (!"ReportCardYear" %in% names(sample) ||
+        is.na(sample$ReportCardYear[1]) ||
+        as.integer(sample$ReportCardYear[1]) != report_year) {
+      stop("Incorrect report-card year")
+    }
+  }
+  
+  TRUE
 }
 
 
-# STEP 6: Verify that all expected files exist
+# STEP 4: Download missing files and validate everything
 
-missing_files <- setdiff(
-  downloads$filename,
-  list.files("data/raw")
-)
+failed <- character()
 
-cat("\nFiles still missing:", length(missing_files), "\n")
-print(missing_files)
-
-# STEP 7: Provide manual download instructions if needed
-
-# If any files could not be downloaded automatically,
-# display their source links and required filenames.
-
-if (length(missing_files) > 0) {
+for (i in seq_len(nrow(downloads))) {
   
-  cat("\nMANUAL DOWNLOAD INSTRUCTIONS:\n")
+  destination <- file.path(
+    "data/raw", downloads$filename[i]
+  )
   
-  for (name in missing_files) {
+  # Download only if the file does not already exist
+  new_file <- !file.exists(destination)
+  
+  if (new_file) {
     
-    cat("\nFile:", name, "\n")
-    cat("Source:", downloads$url[downloads$filename == name], "\n")
-    cat("Save to: data/raw/", name, "\n", sep = "")
+    tryCatch({
+      
+      status <- download.file(
+        downloads$url[i],
+        destfile = destination,
+        mode = "wb",
+        quiet = TRUE
+      )
+      
+      if (status != 0) stop("Download unsuccessful")
+      
+    }, error = function(e) {
+      cat("Download error:", conditionMessage(e), "\n")
+    })
+  }
+  
+  # Validate both downloaded and existing files
+  valid <- tryCatch(
+    validate_file(
+      destination,
+      downloads$type[i],
+      downloads$year[i]
+    ),
+    error = function(e) {
+      cat("Validation error:", conditionMessage(e), "\n")
+      FALSE
+    }
+  )
+  
+  if (valid) {
+    
+    cat("Verified:", downloads$filename[i], "\n")
+    
+  } else {
+    
+    failed <- c(failed, downloads$filename[i])
+    
+    # Remove only invalid files downloaded during this run
+    if (new_file && file.exists(destination)) {
+      file.remove(destination)
+    }
   }
 }
+
+
+# STEP 5: Report any problems
+
+if (length(failed) > 0) {
+  
+  cat("\nFILES REQUIRING ATTENTION:\n")
+  
+  for (name in failed) {
+    
+    i <- match(name, downloads$filename)
+    
+    cat("\nFile:", name)
+    cat("\nDownload:", downloads$url[i])
+    cat("\nSave as: data/raw/", name, "\n", sep = "")
+  }
+  
+  stop("\nResolve the files above and rerun Script 00.")
+}
+
+cat("\nAll 12 SCDE files downloaded and validated!\n")
