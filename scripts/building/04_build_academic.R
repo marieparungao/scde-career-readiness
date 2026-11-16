@@ -1,25 +1,27 @@
 # ============================================================
 # 04: BUILD ACADEMIC ACHIEVEMENT CHARACTERISTICS
 # ============================================================
-# Purpose: Construct a comparable school-level measure
-# of academic achievement across four academic years.
+# Purpose: Construct a school-level academic achievement
+# measure across five academic years: 2021-22 to 2025-26.
 #
-# Source: SC School Report Card workbooks
+# Source: SC School Report Card researcher workbooks
 # Output: data/processed/academic_panel.csv
 #
-# COMPLETED STEPS:
-# - Identify available academic achievement measures
-# - Select a consistent measure across all four years
-# - Verify variable definitions and reporting years
-# - Extract school-level academic achievement data
-# - Standardize school IDs and academic years
-# - Check missing values and school coverage
-# - Save the cleaned academic dataset
+# MEASURE:
+# 100 * NUM_ACHIEVE / DEN_ACHIEVE
+# Achievement points earned as a percentage of available points.
+# This is not the percentage of students meeting proficiency.
+#
+# REVIEW STILL NEEDED:
+# - Verify achievement scoring rules across years
+# - Determine whether the measure is comparable across years
 # ============================================================
+
 
 # STEP 1: Load packages
 library(readxl)
 library(dplyr)
+
 
 # STEP 2: Find the researcher workbooks
 researcher_files <- list.files(
@@ -30,73 +32,8 @@ researcher_files <- list.files(
   ignore.case = TRUE
 )
 
-print(researcher_files)
 
-# STEP 3: Import the 2022 ratings sheet
-file_2022 <- researcher_files[
-  tolower(basename(researcher_files)) ==
-    tolower("ReportCardData_forResearchers2022.XLSx")
-]
-
-stopifnot(length(file_2022) == 1)
-
-academic_2022_raw <- read_excel(
-  file_2022,
-  sheet = "Ratings",
-  skip = 2,
-  col_types = "text"
-)
-
-# Display achievement information for high schools
-academic_2022_raw |>
-  filter(SCHOOLTYPECD == "H") |>
-  select(
-    SCHOOLID,
-    SchoolNm,
-    NUM_ACHIEVE,
-    DEN_ACHIEVE,
-    RATE_ACHIEVE
-  ) |>
-  head()
-
-# STEP 4: Clean the 2022 achievement data
-academic_2022 <- academic_2022_raw |>
-  filter(SCHOOLTYPECD == "H") |>
-  transmute(
-    school_id = sprintf("%07d", as.integer(SCHOOLID)),
-    academic_year = "2021-22",
-    district_name = gsub("[[:space:]]+", " ", DistrictNm),
-    school_name = gsub("[[:space:]]+", " ", SchoolNm),
-    
-    achievement_rating = RATE_ACHIEVE,
-    
-    achievement_points = as.numeric(
-      na_if(trimws(NUM_ACHIEVE), "*")
-    ),
-    
-    achievement_available = as.numeric(
-      na_if(trimws(DEN_ACHIEVE), "*")
-    )
-  ) |>
-  mutate(
-    academic_achievement_points_pct = if_else(
-      !is.na(achievement_rating) &
-        achievement_rating != "Not Rated" &
-        !is.na(achievement_available) &
-        achievement_available > 0,
-      100 * achievement_points / achievement_available,
-      NA_real_
-    )
-  )
-
-# Check the results
-nrow(academic_2022)
-
-sum(duplicated(academic_2022$school_id))
-
-summary(academic_2022$academic_achievement_points_pct)
-
-# STEP 5: Create a function to build the remaining years
+# STEP 3: Create a function to import and clean one year
 build_academic <- function(filename, year_label,
                            sheet_name, rows_to_skip) {
   
@@ -104,6 +41,7 @@ build_academic <- function(filename, year_label,
     tolower(basename(researcher_files)) == tolower(filename)
   ]
   
+  # Confirm exactly one matching file exists
   stopifnot(length(file_path) == 1)
   
   read_excel(
@@ -116,9 +54,14 @@ build_academic <- function(filename, year_label,
     transmute(
       school_id = sprintf("%07d", as.integer(SCHOOLID)),
       academic_year = year_label,
-      district_name = gsub("[[:space:]]+", " ", DistrictNm),
-      school_name = gsub("[[:space:]]+", " ", SchoolNm),
-      achievement_rating = RATE_ACHIEVE,
+      district_name = trimws(
+        gsub("[[:space:]]+", " ", DistrictNm)
+      ),
+      school_name = trimws(
+        gsub("[[:space:]]+", " ", SchoolNm)
+      ),
+      
+      achievement_rating = trimws(RATE_ACHIEVE),
       
       achievement_points = as.numeric(
         na_if(trimws(NUM_ACHIEVE), "*")
@@ -141,7 +84,17 @@ build_academic <- function(filename, year_label,
 }
 
 
-# STEP 6: Build 2023 and 2024
+# STEP 4: Build each year
+# The workbook year is the END of the academic year.
+# Ratings-sheet names and header positions vary by year.
+
+academic_2022 <- build_academic(
+  filename = "ReportCardData_forResearchers2022.XLSx",
+  year_label = "2021-22",
+  sheet_name = "Ratings",
+  rows_to_skip = 2
+)
+
 academic_2023 <- build_academic(
   filename = "ReportCardData_forResearchers2023_3.XLSx",
   year_label = "2022-23",
@@ -156,17 +109,33 @@ academic_2024 <- build_academic(
   rows_to_skip = 0
 )
 
+academic_2025 <- build_academic(
+  filename = "ReportCardData_forResearchers2025 5.xlsx",
+  year_label = "2024-25",
+  sheet_name = "REPORT_CARD_RATINGS",
+  rows_to_skip = 0
+)
 
-# STEP 7: Combine all three years
+academic_2026 <- build_academic(
+  filename = "ReportCardData_forResearchers2026.XLSx",
+  year_label = "2025-26",
+  sheet_name = "REPORT_CARD_RATINGS",
+  rows_to_skip = 0
+)
+
+
+# STEP 5: Combine the five years
 academic_panel <- bind_rows(
   academic_2022,
   academic_2023,
-  academic_2024
+  academic_2024,
+  academic_2025,
+  academic_2026
 ) |>
   arrange(academic_year, school_id)
 
 
-# STEP 8: Check identifiers and percentage ranges
+# STEP 6: Check identifiers and percentage ranges
 stopifnot(
   !anyNA(academic_panel[c("school_id", "academic_year")]),
   
@@ -178,15 +147,23 @@ stopifnot(
   
   all(
     is.na(academic_panel$academic_achievement_points_pct) |
-      between(academic_panel$academic_achievement_points_pct, 0, 100)
+      between(
+        academic_panel$academic_achievement_points_pct,
+        0, 100
+      )
   )
 )
 
+# Display school coverage and missing achievement by year
 print(
   academic_panel |>
     group_by(academic_year) |>
     summarise(
       observations = n(),
+      not_rated = sum(
+        achievement_rating == "Not Rated",
+        na.rm = TRUE
+      ),
       missing_achievement = sum(
         is.na(academic_achievement_points_pct)
       ),
@@ -195,7 +172,7 @@ print(
 )
 
 
-# STEP 9: Save the cleaned dataset
+# STEP 7: Save the cleaned dataset
 dir.create(
   "data/processed",
   recursive = TRUE,
