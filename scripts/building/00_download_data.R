@@ -136,23 +136,74 @@ validate_file <- function(file, type, year) {
   TRUE
 }
 
-
-# STEP 4: Download missing files and validate everything
+# STEP 4: Standardize, download, and validate files
 
 failed <- character()
 
 for (i in seq_len(nrow(downloads))) {
   
-  destination <- file.path(
-    "data/raw", downloads$filename[i]
+  name <- downloads$filename[i]
+  year <- downloads$year[i]
+  type <- downloads$type[i]
+  destination <- file.path("data/raw", name)
+  
+  # Identify matching files by their actual contents,
+  # regardless of their original filenames
+  existing <- list.files(
+    "data/raw",
+    pattern = "\\.xlsx$",
+    recursive = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
   )
   
-  # Download only if the file does not already exist
-  new_file <- !file.exists(destination)
+  matches <- existing[vapply(existing, function(file) {
+    tryCatch(
+      validate_file(file, type, year),
+      error = function(e) FALSE
+    )
+  }, logical(1))]
   
-  if (new_file) {
+  # Use the standardized filename if it already exists
+  if (file.exists(destination)) {
     
-    tryCatch({
+    if (!destination %in% matches) {
+      cat("INVALID EXISTING FILE:", name, "\n")
+      failed <- c(failed, name)
+      next
+    }
+    
+    # Report extra copies without deleting them
+    duplicates <- setdiff(matches, destination)
+    
+    if (length(duplicates) > 0) {
+      cat("Extra copies found for:", name, "\n")
+      print(basename(duplicates))
+    }
+    
+  } else if (length(matches) == 1) {
+    
+    # Rename an existing verified file
+    if (!file.rename(matches, destination)) {
+      cat("Could not rename:", basename(matches), "\n")
+      failed <- c(failed, name)
+      next
+    }
+    
+    cat("Renamed:", basename(matches), "->", name, "\n")
+    
+  } else if (length(matches) > 1) {
+    
+    # Do not guess which duplicate to use
+    cat("Multiple matching files found for:", name, "\n")
+    print(basename(matches))
+    failed <- c(failed, name)
+    next
+    
+  } else {
+    
+    # Download if no matching local file exists
+    downloaded <- tryCatch({
       
       status <- download.file(
         downloads$url[i],
@@ -162,57 +213,50 @@ for (i in seq_len(nrow(downloads))) {
       )
       
       if (status != 0) stop("Download unsuccessful")
+      TRUE
       
     }, error = function(e) {
-      cat("Download error:", conditionMessage(e), "\n")
+      cat("Download failed:", conditionMessage(e), "\n")
+      FALSE
     })
+    
+    if (!downloaded) {
+      if (file.exists(destination)) file.remove(destination)
+      failed <- c(failed, name)
+      next
+    }
   }
   
-  # Validate both downloaded and existing files
+  # Verify the final standardized file
   valid <- tryCatch(
-    validate_file(
-      destination,
-      downloads$type[i],
-      downloads$year[i]
-    ),
-    error = function(e) {
-      cat("Validation error:", conditionMessage(e), "\n")
-      FALSE
-    }
+    validate_file(destination, type, year),
+    error = function(e) FALSE
   )
   
   if (valid) {
-    
-    cat("Verified:", downloads$filename[i], "\n")
-    
+    cat("Verified:", name, "\n")
   } else {
-    
-    failed <- c(failed, downloads$filename[i])
-    
-    # Remove only invalid files downloaded during this run
-    if (new_file && file.exists(destination)) {
-      file.remove(destination)
-    }
+    cat("Validation failed:", name, "\n")
+    failed <- c(failed, name)
   }
 }
 
 
-# STEP 5: Report any problems
+# STEP 5: Report any unresolved files
 
 if (length(failed) > 0) {
   
   cat("\nFILES REQUIRING ATTENTION:\n")
   
   for (name in failed) {
-    
     i <- match(name, downloads$filename)
     
-    cat("\nFile:", name)
-    cat("\nDownload:", downloads$url[i])
-    cat("\nSave as: data/raw/", name, "\n", sep = "")
+    cat("\nFile:", name,
+        "\nSource:", downloads$url[i],
+        "\nExpected location: data/raw/", name, "\n", sep = "")
   }
   
-  stop("\nResolve the files above and rerun Script 00.")
+  stop("Resolve the files above and rerun Script 00.")
 }
 
-cat("\nAll 12 SCDE files downloaded and validated!\n")
+cat("\nAll 12 SCDE workbooks validated successfully!\n")
