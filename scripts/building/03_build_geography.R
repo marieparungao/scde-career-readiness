@@ -1,41 +1,63 @@
 # ============================================================
 # 03: BUILD GEOGRAPHIC CHARACTERISTICS
 # ============================================================
-# Purpose: Construct school locale classifications.
+# Purpose: Construct school locale classifications for
+# 2021-22 through 2025-26.
 #
-# Source: NCES school geographic data
+# Source: NCES school directories and EDGE geographic data
 # Output: data/processed/geography_panel.csv
 #
-# COMPLETED STEPS:
-# - Download and inspect NCES geographic data
-# - Identify school IDs and locale classifications
-# - Classify schools as city, suburb, town, or rural
-# - Standardize school IDs to match the readiness panel
-# - Check for duplicate and unmatched schools
-# - Save the cleaned geographic dataset
+# NOTE:
+# For 2025-26, use the 2025-26 preliminary directory with
+# 2024-25 locale classifications, assuming unchanged locale.
+# Available carried-forward locales are explicitly flagged.
+# Unmatched schools remain missing for review.
 # ============================================================
+
 
 # STEP 1: Load packages
 library(readxl)
 library(dplyr)
 
 
-# STEP 2: Identify the historical source files
+# STEP 2: Identify the source files
 sources <- data.frame(
-  academic_year = c("2021-22", "2022-23", "2023-24"),
+  academic_year = c(
+    "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"
+  ),
   
-  source_year = c("2021-2022", "2022-2023", "2023-2024"),
+  # Actual year of each school directory
+  source_year = c(
+    "2021-2022",
+    "2022-2023",
+    "2023-2024",
+    "2024-2025",
+    "2025-2026"
+  ),
+  
+  # Actual year of each geography file
+  geography_source_year = c(
+    "2021-2022",
+    "2022-2023",
+    "2023-2024",
+    "2024-2025",
+    "2024-2025"
+  ),
   
   directory_zip = c(
     "ccd_sch_029_2122_w_1a_071722.zip",
     "ccd_sch_029_2223_w_1a_083023.zip",
-    "ccd_sch_029_2324_w_1a_073124.zip"
+    "ccd_sch_029_2324_w_1a_073124.zip",
+    "ccd_sch_029_2425_w_1a_073025.zip",
+    "ccd_sch_029_2526_w_0a_050626.zip"
   ),
   
   geography_zip = c(
     "EDGE_GEOCODE_PUBLICSCH_2122.zip",
     "EDGE_GEOCODE_PUBLICSCH_2223.zip",
-    "EDGE_GEOCODE_PUBLICSCH_2324.zip"
+    "EDGE_GEOCODE_PUBLICSCH_2324.zip",
+    "EDGE_GEOCODE_PUBLICSCH_2425.zip",
+    "EDGE_GEOCODE_PUBLICSCH_2425.zip"
   )
 )
 
@@ -51,10 +73,12 @@ readiness <- read.csv(
 
 stopifnot(
   !anyNA(readiness[c("school_id", "academic_year")]),
+  
   !anyDuplicated(
     readiness[c("school_id", "academic_year")]
   ),
-  all(readiness$academic_year %in% sources$academic_year)
+  
+  setequal(readiness$academic_year, sources$academic_year)
 )
 
 
@@ -92,7 +116,7 @@ extract_file <- function(zip_name, file_pattern) {
     )
   }
   
-  # Extract into a temporary folder; keep the original ZIP unchanged
+  # Extract temporarily; keep the original ZIP unchanged
   extraction_folder <- tempfile("nces_")
   dir.create(extraction_folder)
   
@@ -106,7 +130,7 @@ extract_file <- function(zip_name, file_pattern) {
 }
 
 
-# STEP 5: Create a function to build one historical year
+# STEP 5: Create a function to build one academic year
 build_geography <- function(i) {
   
   year <- sources$academic_year[i]
@@ -123,6 +147,7 @@ build_geography <- function(i) {
     check.names = FALSE
   )
   
+  # Verify directory columns before using them
   stopifnot(
     all(c(
       "ST", "ST_SCHID", "NCESSCH",
@@ -133,9 +158,12 @@ build_geography <- function(i) {
   directory <- directory |>
     filter(ST == "SC")
   
+  # Validate against the actual directory year
   stopifnot(
     nrow(directory) > 0,
+    
     all(directory$SCHOOL_YEAR == sources$source_year[i]),
+    
     all(grepl(
       "^SC-[0-9]{4}-[0-9]{3}$",
       trimws(directory$ST_SCHID)
@@ -179,9 +207,15 @@ build_geography <- function(i) {
   geography <- geography |>
     filter(STATE == "SC")
   
+  # Validate against the actual geography year
+  # This differs from the directory year for 2025-26.
   stopifnot(
     nrow(geography) > 0,
-    all(geography$SCHOOLYEAR == sources$source_year[i])
+    
+    all(
+      geography$SCHOOLYEAR ==
+        sources$geography_source_year[i]
+    )
   )
   
   valid_codes <- as.character(
@@ -217,7 +251,7 @@ build_geography <- function(i) {
   )
   
   
-  # Match geographic information to this year's readiness sample
+  # Match geography to this year's readiness sample
   result <- readiness |>
     filter(academic_year == year) |>
     select(school_id, academic_year, school_name) |>
@@ -232,7 +266,17 @@ build_geography <- function(i) {
       relationship = "many-to-one"
     ) |>
     mutate(
-      locale_source_year = year,
+      directory_source_year = sources$source_year[i],
+      locale_source_year = sources$geography_source_year[i],
+      
+      # Flag available locales taken from an older year
+      locale_carried_forward =
+        !is.na(locale_type) &
+        (
+          sources$geography_source_year[i] !=
+            sources$source_year[i]
+        ),
+      
       directory_source_file = sources$directory_zip[i],
       locale_source_file = sources$geography_zip[i]
     )
@@ -247,7 +291,7 @@ build_geography <- function(i) {
 }
 
 
-# STEP 6: Combine all three historical years
+# STEP 6: Combine all five academic years
 geography_panel <- lapply(
   seq_len(nrow(sources)),
   build_geography
@@ -275,6 +319,7 @@ print(
     summarise(
       observations = n(),
       missing_locale = sum(is.na(locale_type)),
+      carried_forward_locales = sum(locale_carried_forward),
       .groups = "drop"
     )
 )
@@ -315,5 +360,5 @@ print(
   row.names = FALSE
 )
 
-cat("\nHistorical geography panel saved successfully!\n")
+cat("\nGeography panel saved successfully!\n")
 cat("School-year observations:", nrow(geography_panel), "\n")

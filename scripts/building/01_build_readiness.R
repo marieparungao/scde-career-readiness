@@ -1,23 +1,30 @@
 # ============================================================
 # 01: BUILD CAREER READINESS PANEL
 # ============================================================
-# Purpose: Combine career-readiness data from four academic
+# Purpose: Combine career-readiness data from five academic
 # years into one school-level panel dataset.
 #
-# Input: Report Card researcher workbooks (2022-23 to 2025-26)
+# Input: Report Card researcher workbooks, report years 2022-2026
+#        (academic years 2021-22 through 2025-26)
 # Output: data/processed/career_readiness_panel.csv
-# ============================================================
 
 
 # STEP 1: Match academic years to the actual workbooks
-
 input_files <- data.frame(
-  academic_year = c("2021-22", "2022-23", "2023-24"),
+  academic_year = c(
+    "2021-22",
+    "2022-23",
+    "2023-24",
+    "2024-25",
+    "2025-26"
+  ),
   
   filename = c(
     "ReportCardData_forResearchers2022.XLSx",
     "ReportCardData_forResearchers2023_3.XLSx",
-    "ReportCardData_forResearchers2024_11.xlsx"
+    "ReportCardData_forResearchers2024_11.xlsx",
+    "ReportCardData_forResearchers2025 5.xlsx",
+    "ReportCardData_forResearchers2026.XLSx"
   )
 )
 
@@ -114,7 +121,7 @@ clean_readiness <- function(year) {
 }
 
 
-# STEP 3: Apply the function to all four years
+# STEP 3: Apply the function to all five years
 
 career_readiness_panel <- years |>
   lapply(clean_readiness) |>
@@ -130,6 +137,23 @@ print(dim(career_readiness_panel))
 stopifnot(!anyDuplicated(
   career_readiness_panel[c("school_id", "academic_year")]
 ))
+
+# Confirm that all five academic years are represented
+stopifnot(
+  setequal(career_readiness_panel$academic_year, years)
+)
+
+# Display school coverage by year
+print(
+  career_readiness_panel |>
+    dplyr::count(academic_year, name = "observations")
+)
+
+dir.create(
+  "data/processed",
+  recursive = TRUE,
+  showWarnings = FALSE
+)
 
 # Save the cleaned panel
 write.csv(
@@ -174,8 +198,8 @@ print(sum(
 ))
 
 # DATA NOTES:
-# In the currently uploaded workbooks, 16 school-year records
-# have "*" in cohort size and all six readiness outcomes.
-# These records are retained with NA values.
-# The interpretation of "*" should be confirmed in the
-# source documentation; it is not treated as zero.
+# "*" and blank numerical entries are retained as NA.
+# Missing values are not treated as zero.
+# See the printed diagnostics for current missing-value counts.
+# Cross-year pathway definitions, including PctCred, still
+# require review before interpreting changes over time.
