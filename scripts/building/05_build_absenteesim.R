@@ -2,14 +2,14 @@
 # 05: BUILD CHRONIC ABSENTEEISM CHARACTERISTICS
 # ============================================================
 # Purpose: Construct school-level chronic absenteeism
-# rates across four academic years.
+# rates across five academic years.
 #
 # Source: SC School Report Card workbooks
 # Output: data/processed/absenteeism_panel.csv
 #
 # COMPLETED STEPS:
 # - Locate chronic absenteeism data in report cards
-# - Confirm definitions and reporting-year alignment
+# - Definition comparability across years remains under review
 # - Extract school-level chronic absenteeism rates
 # - Standardize school IDs and academic years
 # - Check missing values and school coverage
@@ -83,12 +83,24 @@ absenteeism_2024 <- build_absenteeism(
   "2023-24"
 )
 
+absenteeism_2025 <- build_absenteeism(
+  "ReportCardData_AdditionalInfo2025 5.xlsx",
+  "2024-25"
+)
 
-# STEP 5: Combine the three years
+absenteeism_2026 <- build_absenteeism(
+  "ReportCardData_AdditionalInfo2026.XLSx",
+  "2025-26"
+)
+
+
+# STEP 5: Combine the five years
 absenteeism_panel <- bind_rows(
   absenteeism_2022,
   absenteeism_2023,
-  absenteeism_2024
+  absenteeism_2024,
+  absenteeism_2025,
+  absenteeism_2026
 ) |>
   arrange(academic_year, school_id)
 
