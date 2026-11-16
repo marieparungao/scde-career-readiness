@@ -9,20 +9,42 @@
 # ============================================================
 
 
-# STEP 1: Identify our academic years
+# STEP 1: Match academic years to the actual workbooks
 
-years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+input_files <- data.frame(
+  academic_year = c("2021-22", "2022-23", "2023-24"),
+  
+  filename = c(
+    "ReportCardData_forResearchers2022.XLSx",
+    "ReportCardData_forResearchers2023_3.XLSx",
+    "ReportCardData_forResearchers2024_11.xlsx"
+  )
+)
+
+years <- input_files$academic_year
 
 
 # STEP 2: Create a function to clean one year of data
 
 clean_readiness <- function(year) {
   
-  # Locate and import the year's Excel workbook
-  file <- paste0(
-    "data/raw/ReportCardData_forResearchers",
-    year, ".xlsx"
+  # Find the actual workbook assigned to this academic year
+  filename <- input_files$filename[
+    input_files$academic_year == year
+  ]
+  
+  available_files <- list.files(
+    "data/raw",
+    recursive = TRUE,
+    full.names = TRUE
   )
+  
+  file <- available_files[
+    tolower(basename(available_files)) == tolower(filename)
+  ]
+  
+  # Confirm exactly one matching workbook exists
+  stopifnot(length(file) == 1)
   
   raw <- readxl::read_excel(
     file,
@@ -38,7 +60,7 @@ clean_readiness <- function(year) {
       report_card_year = as.integer(ReportCardYear),
       district_name = DistrictNm,
       school_name = SchoolNm,
-      school_id = SCHOOLID,
+      school_id = sprintf("%07d", as.integer(SCHOOLID)),
       cohort_size = NumInCohort,
       overall_readiness = PctCareer,
       cte_readiness = PctCTE,
@@ -152,7 +174,8 @@ print(sum(
 ))
 
 # DATA NOTES:
-# 14 school-year observations have missing cohort and
-# career-readiness information across all seven measures.
-# These observations are retained with NA values.
-# The meaning of SCDE's "*" code still requires verification.
+# In the currently uploaded workbooks, 16 school-year records
+# have "*" in cohort size and all six readiness outcomes.
+# These records are retained with NA values.
+# The interpretation of "*" should be confirmed in the
+# source documentation; it is not treated as zero.
