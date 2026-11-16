@@ -27,7 +27,11 @@
 # STEP 1: Identify the exact source files
 input_files <- data.frame(
   academic_year = c(
-    "2021-22", "2022-23", "2023-24", "2024-25", "2025-26"
+    "2021-22",
+    "2022-23",
+    "2023-24",
+    "2024-25",
+    "2025-26"
   ),
   
   source_year = c(
@@ -41,11 +45,11 @@ input_files <- data.frame(
   filename = c(
     paste0(
       "135 Day - School Headcount by Gender, Ethnicity ",
-      "and Pupils in Poverty - 2021-22(1).xlsx"
+      "and Pupils in Poverty - 2021-22.xlsx"
     ),
     paste0(
       "School Headcount by Gender, Ethnicity ",
-      "and Pupils in Poverty - 2022-2023(1).xlsx"
+      "and Pupils in Poverty - 2022-2023.xlsx"
     ),
     "School Headcount by Gender, Ethnicity and Pupils in Poverty.xlsx",
     "School Headcount by Gender, Ethnicity and Pupils in Poverty (1).xlsx",
