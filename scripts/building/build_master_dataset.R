@@ -23,6 +23,24 @@ characteristics <- read.csv(
   colClasses = c(school_id = "character")
 )
 
+# Read the academic achievement panel
+academic <- read.csv(
+  "data/processed/academic_panel.csv",
+  colClasses = c(school_id = "character")
+)
+
+# Read the absenteeism panel
+absenteeism <- read.csv(
+  "data/processed/absenteeism_panel.csv",
+  colClasses = c(school_id = "character")
+)
+
+# Read the disability panel
+disability <- read.csv(
+  "data/processed/disability_panel.csv",
+  colClasses = c(school_id = "character")
+)
+
 
 # STEP 2: Check how many school-year observations match
 
@@ -67,6 +85,57 @@ master_dataset <- readiness |>
     by = c("school_id", "academic_year")
   )
 
+# Confirm that the new panels have unique, nonmissing keys
+for (panel in list(academic, absenteeism, disability)) {
+  
+  stopifnot(
+    !anyNA(panel[c("school_id", "academic_year")]),
+    
+    !anyDuplicated(
+      panel[c("school_id", "academic_year")]
+    )
+  )
+}
+
+# Add academic achievement
+master_dataset <- master_dataset |>
+  dplyr::left_join(
+    academic |>
+      dplyr::select(
+        school_id,
+        academic_year,
+        academic_achievement_points_pct
+      ),
+    by = c("school_id", "academic_year"),
+    relationship = "one-to-one"
+  )
+
+# Add chronic absenteeism
+master_dataset <- master_dataset |>
+  dplyr::left_join(
+    absenteeism |>
+      dplyr::select(
+        school_id,
+        academic_year,
+        chronic_absenteeism_pct
+      ),
+    by = c("school_id", "academic_year"),
+    relationship = "one-to-one"
+  )
+
+# Add the disability-composition proxy
+master_dataset <- master_dataset |>
+  dplyr::left_join(
+    disability |>
+      dplyr::select(
+        school_id,
+        academic_year,
+        disability_share_attendance_pct
+      ),
+    by = c("school_id", "academic_year"),
+    relationship = "one-to-one"
+  )
+
 # Verify that the merge preserved our readiness sample
 cat("Master dataset observations:", nrow(master_dataset), "\n")
 cat("Master dataset variables:", ncol(master_dataset), "\n")
@@ -93,7 +162,10 @@ key_variables <- c(
   "poverty_rate",
   "female_share",
   "black_share",
-  "hispanic_share"
+  "hispanic_share",
+  "academic_achievement_points_pct",
+  "chronic_absenteeism_pct",
+  "disability_share_attendance_pct"
 )
 
 cat("\nMissing values in key variables:\n")
