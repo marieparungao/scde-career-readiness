@@ -5,7 +5,9 @@
 # data to construct school-level socioeconomic and
 # demographic characteristics.
 #
-# Academic years: 2022-23 through 2025-26
+# Academic years: 2021-22 through 2023-24
+# Snapshot: 135-day for 2021-22 and 2022-23;
+#           180-day for 2023-24.
 #
 # Variables constructed:
 # - School enrollment (student count)
@@ -24,21 +26,50 @@
 # ============================================================
 
 
-# STEP 1: Identify academic years
+# STEP 1: Identify source years and headcount snapshots
 
-years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+input_files <- data.frame(
+  academic_year = c("2021-22", "2022-23", "2023-24"),
+  
+  year_pattern = c(
+    "2021[^0-9]*22",
+    "2022[^0-9]*2023",
+    "2023[^0-9]*2024"
+  ),
+  
+  headcount_day = c(135L, 135L, 180L)
+)
+
+years <- input_files$academic_year
+
+headcount_files <- list.files(
+  "data/raw",
+  pattern = "Headcount",
+  recursive = TRUE,
+  full.names = TRUE,
+  ignore.case = TRUE
+)
 
 
 # STEP 2: Create a function to clean one year of headcounts
 
 clean_headcounts <- function(year) {
   
-  # Locate and import the Excel workbook
-  file <- paste0("data/raw/Headcount135_", year, ".xlsx")
+  # Find the workbook for this academic year
+  source_info <- input_files[
+    input_files$academic_year == year,
+  ]
   
+  file <- headcount_files[
+    grepl(source_info$year_pattern, basename(headcount_files))
+  ]
+  
+  stopifnot(length(file) == 1)
+  
+  # Read the first worksheet and skip its seven header rows
   raw <- readxl::read_excel(
     file,
-    sheet = "school by gender race pip",
+    sheet = 1,
     skip = 7,
     col_names = FALSE,
     col_types = "text",
@@ -62,11 +93,15 @@ clean_headcounts <- function(year) {
   # Keep school records and standardize school IDs
   raw <- raw |>
     dplyr::filter(
-      grepl("^[0-9]{6,9}$", trimws(school_id))
+      grepl("^[0-9]{6,7}$", trimws(school_id))
     ) |>
     dplyr::mutate(
-      school_id = sub("^0+", "", trimws(school_id)),
-      academic_year = year
+      school_id = sprintf(
+        "%07d",
+        as.integer(trimws(school_id))
+      ),
+      academic_year = year,
+      headcount_day = source_info$headcount_day
     )
   
   # Identify columns containing numerical counts
