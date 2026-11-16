@@ -41,6 +41,16 @@ disability <- read.csv(
   colClasses = c(school_id = "character")
 )
 
+geography <- read.csv(
+  "data/processed/geography_panel.csv",
+  colClasses = c(
+    school_id = "character",
+    academic_year = "character",
+    nces_school_id = "character"
+  ),
+  na.strings = c("", "NA")
+)
+
 
 # STEP 2: Check how many school-year observations match
 
@@ -136,6 +146,31 @@ master_dataset <- master_dataset |>
     relationship = "one-to-one"
   )
 
+# Check geographic merge keys
+stopifnot(
+  !anyNA(geography[c("school_id", "academic_year")]),
+  
+  !anyDuplicated(
+    geography[c("school_id", "academic_year")]
+  )
+)
+
+# Add historical geographic characteristics
+master_dataset <- master_dataset |>
+  dplyr::left_join(
+    geography |>
+      dplyr::select(
+        school_id,
+        academic_year,
+        nces_school_id,
+        locale_code,
+        locale_type,
+        locale_source_year
+      ),
+    by = c("school_id", "academic_year"),
+    relationship = "one-to-one"
+  )
+
 # Verify that the merge preserved our readiness sample
 cat("Master dataset observations:", nrow(master_dataset), "\n")
 cat("Master dataset variables:", ncol(master_dataset), "\n")
@@ -165,7 +200,8 @@ key_variables <- c(
   "hispanic_share",
   "academic_achievement_points_pct",
   "chronic_absenteeism_pct",
-  "disability_share_attendance_pct"
+  "disability_share_attendance_pct",
+  "locale_type"
 )
 
 cat("\nMissing values in key variables:\n")
