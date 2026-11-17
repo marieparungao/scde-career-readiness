@@ -1,141 +1,135 @@
 # ============================================================
-# 03: BUILD GEOGRAPHIC CHARACTERISTICS
+# 03: BUILD GEOGRAPHIC CHARACTERISTICS PANEL
 # ============================================================
-# Purpose: Construct school locale classifications.
+# Purpose: Match SC high schools to historical NCES
+# geographic locale classifications.
 #
-# Source: NCES school geographic data
+# Input: NCES CCD school directories and EDGE locale files
 # Output: data/processed/geography_panel.csv
 #
-# COMPLETED STEPS:
-# - Download and inspect NCES geographic data
-# - Identify school IDs and locale classifications
-# - Classify schools as city, suburb, town, or rural
-# - Standardize school IDs to match the readiness panel
-# - Check for duplicate and unmatched schools
-# - Save the cleaned geographic dataset
+# Academic years: 2022-23 through 2025-26
+# NOTE: 2025-26 uses 2024-25 locales for matched schools (provisional) 
 # ============================================================
 
-# STEP 1: Load packages
+
+# STEP 1: Load packages and identify NCES sources
+
 library(readxl)
 library(dplyr)
 
+years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+nces_years <- years[1:3]
 
-# STEP 2: Identify the historical source files
-sources <- data.frame(
-  academic_year = c("2021-22", "2022-23", "2023-24"),
-  
-  source_year = c("2021-2022", "2022-2023", "2023-2024"),
-  
+# Directory archives have version-specific filenames
+nces_sources <- data.frame(
+  academic_year = nces_years,
+  source_year = paste0(
+    substr(nces_years, 1, 4), "-",
+    as.integer(substr(nces_years, 1, 4)) + 1L
+  ),
   directory_zip = c(
-    "ccd_sch_029_2122_w_1a_071722.zip",
     "ccd_sch_029_2223_w_1a_083023.zip",
-    "ccd_sch_029_2324_w_1a_073124.zip"
+    "ccd_sch_029_2324_w_1a_073124.zip",
+    "ccd_sch_029_2425_w_1a_073025.zip"
   ),
-  
-  geography_zip = c(
-    "EDGE_GEOCODE_PUBLICSCH_2122.zip",
-    "EDGE_GEOCODE_PUBLICSCH_2223.zip",
-    "EDGE_GEOCODE_PUBLICSCH_2324.zip"
+  locale_zip = paste0(
+    "EDGE_GEOCODE_PUBLICSCH_",
+    substr(nces_years, 3, 4),
+    substr(nces_years, 6, 7),
+    ".zip"
   )
 )
 
+options(timeout = max(600, getOption("timeout")))
 
-# STEP 3: Read the readiness dataset
-readiness <- read.csv(
-  "data/processed/career_readiness_panel.csv",
-  colClasses = c(
-    school_id = "character",
-    academic_year = "character"
-  )
-)
+# STEP 2: Locate or download the required ZIP archives
 
-stopifnot(
-  !anyNA(readiness[c("school_id", "academic_year")]),
-  !anyDuplicated(
-    readiness[c("school_id", "academic_year")]
+archives <- data.frame(
+  filename = c(
+    nces_sources$directory_zip,
+    nces_sources$locale_zip
   ),
-  all(readiness$academic_year %in% sources$academic_year)
-)
-
-
-# STEP 4: Create a function to extract one file from a ZIP
-extract_file <- function(zip_name, file_pattern) {
-  
-  available_zips <- list.files(
-    "data/raw",
-    pattern = "\\.zip$",
-    recursive = TRUE,
-    full.names = TRUE,
-    ignore.case = TRUE
-  )
-  
-  zip_path <- available_zips[
-    tolower(basename(available_zips)) == tolower(zip_name)
-  ]
-  
-  if (length(zip_path) != 1) {
-    stop("Expected exactly one ZIP named: ", zip_name)
-  }
-  
-  contents <- unzip(zip_path, list = TRUE)$Name
-  
-  selected_file <- contents[
-    grepl(file_pattern, contents, ignore.case = TRUE)
-  ]
-  
-  if (length(selected_file) != 1) {
-    stop(
-      "Expected exactly one matching file inside ",
-      zip_name,
-      ". Contents: ",
-      paste(contents, collapse = ", ")
+  url = c(
+    paste0(
+      "https://nces.ed.gov/ccd/Data/zip/",
+      nces_sources$directory_zip
+    ),
+    paste0(
+      "https://nces.ed.gov/programs/edge/data/",
+      nces_sources$locale_zip
     )
+  )
+)
+
+dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
+
+for (i in seq_len(nrow(archives))) {
+  
+  file <- file.path("data/raw", archives$filename[i])
+  
+  if (!file.exists(file)) {
+    cat("Downloading:", archives$filename[i], "\n")
+    
+    tryCatch({
+      status <- download.file(
+        archives$url[i], file,
+        mode = "wb", quiet = TRUE
+      )
+      if (status != 0) stop("Download unsuccessful")
+    }, error = function(e) {
+      if (file.exists(file)) file.remove(file)
+      stop(
+        "Download failed. Download manually:\n",
+        archives$url[i], "\nSave as: ", file,
+        "\nReason: ", conditionMessage(e)
+      )
+    })
   }
   
-  # Extract into a temporary folder; keep the original ZIP unchanged
-  extraction_folder <- tempfile("nces_")
-  dir.create(extraction_folder)
-  
-  unzip(
-    zip_path,
-    files = selected_file,
-    exdir = extraction_folder
-  )
-  
-  return(file.path(extraction_folder, selected_file))
+  # Check that the archive is readable
+  stopifnot(nrow(unzip(file, list = TRUE)) > 0)
 }
 
 
-# STEP 5: Create a function to build one historical year
-build_geography <- function(i) {
+# STEP 3: Create functions to extract and clean NCES data
+
+# Extract one matching file without modifying the ZIP
+extract_file <- function(zip_name, pattern) {
   
-  year <- sources$academic_year[i]
+  zip_path <- file.path("data/raw", zip_name)
   
-  # Read the school directory CSV
-  directory_file <- extract_file(
-    sources$directory_zip[i],
-    "\\.csv$"
-  )
+  contents <- unzip(zip_path, list = TRUE)$Name
+  selected <- contents[grepl(pattern, contents, ignore.case = TRUE)]
   
+  if (length(selected) != 1) {
+    stop("Expected one matching file inside ", zip_name)
+  }
+  
+  folder <- tempfile("nces_")
+  dir.create(folder)
+  
+  unzip(zip_path, files = selected, exdir = folder)
+  
+  file.path(folder, selected)
+}
+
+
+# Build geographic classifications for one historical year
+clean_geography <- function(i) {
+  
+  year <- nces_sources$academic_year[i]
+  source_year <- nces_sources$source_year[i]
+  
+  # Read the CCD school directory
   directory <- read.csv(
-    directory_file,
+    extract_file(nces_sources$directory_zip[i], "\\.csv$"),
     colClasses = "character",
     check.names = FALSE
-  )
-  
-  stopifnot(
-    all(c(
-      "ST", "ST_SCHID", "NCESSCH",
-      "SCH_NAME", "SCHOOL_YEAR"
-    ) %in% names(directory))
-  )
-  
-  directory <- directory |>
+  ) |>
     filter(ST == "SC")
   
   stopifnot(
-    nrow(directory) > 0,
-    all(directory$SCHOOL_YEAR == sources$source_year[i]),
+    all(directory$SCHOOL_YEAR == source_year),
     all(grepl(
       "^SC-[0-9]{4}-[0-9]{3}$",
       trimws(directory$ST_SCHID)
@@ -145,63 +139,26 @@ build_geography <- function(i) {
   directory <- directory |>
     transmute(
       school_id = gsub(
-        "-", "",
-        sub("^SC-", "", trimws(ST_SCHID))
+        "-", "", sub("^SC-", "", trimws(ST_SCHID))
       ),
-      nces_school_id = trimws(NCESSCH),
-      nces_school_name = SCH_NAME
+      nces_school_id = trimws(NCESSCH)
     )
   
-  stopifnot(
-    !anyNA(directory$school_id),
-    !anyDuplicated(directory$school_id)
-  )
-  
-  
-  # Read the geographic Excel workbook
-  geography_file <- extract_file(
-    sources$geography_zip[i],
-    "\\.xlsx$"
-  )
-  
+  # Read the matching EDGE geographic workbook
   geography <- read_excel(
-    geography_file,
-    sheet = 1,
+    extract_file(nces_sources$locale_zip[i], "\\.xlsx$"),
     col_types = "text"
-  )
-  
-  stopifnot(
-    all(c(
-      "NCESSCH", "STATE", "LOCALE", "SCHOOLYEAR"
-    ) %in% names(geography))
-  )
-  
-  geography <- geography |>
+  ) |>
     filter(STATE == "SC")
   
-  stopifnot(
-    nrow(geography) > 0,
-    all(geography$SCHOOLYEAR == sources$source_year[i])
-  )
-  
-  valid_codes <- as.character(
-    c(11:13, 21:23, 31:33, 41:43)
-  )
+  stopifnot(all(geography$SCHOOLYEAR == source_year))
   
   geography <- geography |>
     transmute(
       nces_school_id = trimws(NCESSCH),
-      locale_code_raw = trimws(LOCALE)
+      locale_code = suppressWarnings(as.integer(LOCALE))
     ) |>
     mutate(
-      locale_code = as.integer(
-        if_else(
-          locale_code_raw %in% valid_codes,
-          locale_code_raw,
-          NA_character_
-        )
-      ),
-      
       locale_type = case_when(
         locale_code %in% 11:13 ~ "City",
         locale_code %in% 21:23 ~ "Suburb",
@@ -211,13 +168,13 @@ build_geography <- function(i) {
       )
     )
   
+  # Confirm unique identifiers before matching
   stopifnot(
-    !anyNA(geography$nces_school_id),
+    !anyDuplicated(directory$school_id),
     !anyDuplicated(geography$nces_school_id)
   )
   
-  
-  # Match geographic information to this year's readiness sample
+  # Match geographic information to the readiness sample
   result <- readiness |>
     filter(academic_year == year) |>
     select(school_id, academic_year, school_name) |>
@@ -233,87 +190,100 @@ build_geography <- function(i) {
     ) |>
     mutate(
       locale_source_year = year,
-      directory_source_file = sources$directory_zip[i],
-      locale_source_file = sources$geography_zip[i]
+      locale_carried_forward = FALSE,
+      directory_source_file = nces_sources$directory_zip[i],
+      locale_source_file = nces_sources$locale_zip[i]
     )
   
-  cat(
-    year, ":",
-    nrow(result), "records;",
-    sum(is.na(result$locale_type)), "missing locales\n"
-  )
+  cat(year, ":", nrow(result), "schools;",
+      sum(is.na(result$locale_type)), "missing locales\n")
   
-  return(result)
+  result
 }
 
 
-# STEP 6: Combine all three historical years
-geography_panel <- lapply(
-  seq_len(nrow(sources)),
-  build_geography
+# STEP 4: Build the four-year geography panel
+
+readiness <- read.csv(
+  "data/processed/career_readiness_panel.csv",
+  colClasses = c(
+    school_id = "character",
+    academic_year = "character"
+  )
+)
+
+stopifnot(
+  setequal(unique(readiness$academic_year), years),
+  !anyDuplicated(readiness[c("school_id", "academic_year")])
+)
+
+# Use the corresponding NCES data for the first three years
+historical_geography <- lapply(
+  seq_len(nrow(nces_sources)),
+  clean_geography
 ) |>
-  bind_rows() |>
+  bind_rows()
+
+# Provisional 2025-26 classification:
+# Match continuing schools to their 2024-25 NCES locales.
+geography_2026 <- readiness |>
+  filter(academic_year == "2025-26") |>
+  select(school_id, academic_year, school_name) |>
+  left_join(
+    historical_geography |>
+      filter(academic_year == "2024-25") |>
+      select(-academic_year, -school_name),
+    by = "school_id",
+    relationship = "many-to-one"
+  ) |>
+  mutate(
+    locale_source_year = "2024-25",
+    locale_carried_forward = !is.na(locale_type)
+  )
+
+geography_panel <- bind_rows(
+  historical_geography, geography_2026
+) |>
   arrange(academic_year, school_id)
 
 
-# STEP 7: Validate the combined panel
+# STEP 5: Validate and save the dataset
+
 stopifnot(
   nrow(geography_panel) == nrow(readiness),
-  
-  !anyNA(
-    geography_panel[c("school_id", "academic_year")]
-  ),
-  
+  !anyNA(geography_panel[c("school_id", "academic_year")]),
   !anyDuplicated(
     geography_panel[c("school_id", "academic_year")]
   )
 )
 
+# Check geographic coverage by academic year
 print(
   geography_panel |>
     group_by(academic_year) |>
     summarise(
-      observations = n(),
+      schools = n(),
       missing_locale = sum(is.na(locale_type)),
+      carried_forward = sum(locale_carried_forward),
       .groups = "drop"
     )
 )
 
-
-# STEP 8: Save the panel and missing-locale report
-dir.create(
-  "data/processed",
-  recursive = TRUE,
-  showWarnings = FALSE
-)
+dir.create("data/processed", showWarnings = FALSE)
 
 write.csv(
   geography_panel,
   "data/processed/geography_panel.csv",
-  row.names = FALSE,
-  na = ""
-)
-
-missing_geography <- geography_panel |>
-  filter(is.na(locale_type))
-
-write.csv(
-  missing_geography,
-  "data/processed/geography_missing_records.csv",
-  row.names = FALSE,
-  na = ""
-)
-
-print(
-  missing_geography |>
-    select(
-      academic_year,
-      school_id,
-      school_name,
-      nces_school_id
-    ),
   row.names = FALSE
 )
 
-cat("\nHistorical geography panel saved successfully!\n")
-cat("School-year observations:", nrow(geography_panel), "\n")
+# Save unmatched records for further investigation
+write.csv(
+  filter(geography_panel, is.na(locale_type)),
+  "data/processed/geography_missing_records.csv",
+  row.names = FALSE
+)
+
+cat("\nGeographic characteristics panel saved successfully!\n")
+cat("Observations:", nrow(geography_panel), "\n")
+cat("Variables:", ncol(geography_panel), "\n")

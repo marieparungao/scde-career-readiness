@@ -1,21 +1,34 @@
 # ============================================================
 # 02: BUILD SCHOOL CHARACTERISTICS PANEL
 # ============================================================
-# Purpose: Construct school-level poverty, gender, and
-# racial/ethnic composition from 135-day headcounts.
+# Purpose: Construct school-level enrollment, poverty,
+# gender, and racial/ethnic characteristics.
 #
-# Input: Headcount135_YYYY-YY.xlsx
+# Input: Validated SCDE 135-day headcounts (Script 00)
 # Output: data/processed/school_characteristics_panel.csv
 #
 # Academic years: 2022-23 through 2025-26
-# Includes all school types; high schools are selected
-# through the readiness panel when building the master.
+# Includes all schools; the master dataset selects high schools.
 # ============================================================
 
 
-# STEP 1: Define academic years
+# STEP 1: Load packages and identify source files
+
+library(readxl)
+library(dplyr)
 
 years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+
+sources <- read.csv("data/raw/scde_source_manifest.csv")
+
+headcount_sources <- sources |>
+  filter(type == "headcount", academic_year %in% years)
+
+stopifnot(
+  nrow(headcount_sources) == length(years),
+  !anyDuplicated(headcount_sources$academic_year),
+  setequal(headcount_sources$academic_year, years)
+)
 
 count_variables <- c(
   "enrollment", "female", "male", "gender_missing",
@@ -25,21 +38,21 @@ count_variables <- c(
 )
 
 
-# STEP 2: Create a function to clean one year
+# STEP 2: Create a function to clean one academic year
 
 clean_headcounts <- function(year) {
   
-  file <- file.path(
-    "data/raw",
-    paste0("Headcount135_", year, ".xlsx")
-  )
+  # Locate the validated 135-day headcount workbook
+  file <- headcount_sources$file_path[
+    headcount_sources$academic_year == year
+  ]
   
   if (!file.exists(file)) {
-    stop("Missing file: ", file, ". Run Script 00 first.")
+    stop("Missing headcount workbook for ", year)
   }
   
   # Read school records after the seven header rows
-  raw <- readxl::read_excel(
+  raw <- read_excel(
     file,
     sheet = "school by gender race pip",
     skip = 7,
@@ -50,28 +63,20 @@ clean_headcounts <- function(year) {
   
   stopifnot(ncol(raw) == 16)
   
-  # Assign names matching the source column order
+  # Assign descriptive column names
   names(raw) <- c(
     "school_id", "district_name", "school_name",
     count_variables
   )
   
-  # Keep school records and standardize seven-digit IDs
+  # Keep school records and standardize identifiers
   clean <- raw |>
-    dplyr::filter(
-      grepl("^[0-9]{6,7}$", trimws(school_id))
-    ) |>
-    dplyr::mutate(
+    filter(grepl("^[0-9]{6,7}$", trimws(school_id))) |>
+    mutate(
       academic_year = year,
-      school_id = sprintf(
-        "%07d", as.integer(trimws(school_id))
-      ),
-      district_name = gsub(
-        "[[:space:]]+", " ", district_name
-      ),
-      school_name = gsub(
-        "[[:space:]]+", " ", school_name
-      )
+      school_id = sprintf("%07d", as.integer(school_id)),
+      district_name = trimws(gsub("[[:space:]]+", " ", district_name)),
+      school_name = trimws(gsub("[[:space:]]+", " ", school_name))
     )
   
   # Convert student counts to numeric values
@@ -80,19 +85,16 @@ clean_headcounts <- function(year) {
     values <- gsub(",", "", trimws(clean[[variable]]))
     values[values %in% c("*", "")] <- NA_character_
     
-    invalid <- unique(values[
-      !is.na(values) &
-        is.na(suppressWarnings(as.numeric(values)))
-    ])
-    
-    if (length(invalid) > 0) {
-      stop("Unexpected values in ", year, " / ", variable)
+    # Stop if unexpected nonnumeric values appear
+    if (any(!is.na(values) &
+            is.na(suppressWarnings(as.numeric(values))))) {
+      stop("Unexpected values in ", year, ": ", variable)
     }
     
     clean[[variable]] <- as.numeric(values)
   }
   
-  # Check school identifiers and numerical completeness
+  # Confirm unique school IDs and complete counts
   stopifnot(
     !anyNA(clean$school_id),
     !anyDuplicated(clean$school_id),
@@ -105,22 +107,22 @@ clean_headcounts <- function(year) {
 }
 
 
-# STEP 3: Combine all four years
+# STEP 3: Build the four-year panel
 
 headcount_panel <- years |>
   lapply(clean_headcounts) |>
-  dplyr::bind_rows()
+  bind_rows()
 
 
-# STEP 4: Validate enrollment and subgroup counts
+# STEP 4: Validate counts and calculate characteristics
 
-# Confirm unique school-year records
 stopifnot(
   !anyDuplicated(
     headcount_panel[c("school_id", "academic_year")]
   )
 )
 
+# Verify that demographic totals equal school enrollment
 gender_total <- rowSums(
   headcount_panel[c("female", "male", "gender_missing")]
 )
@@ -133,31 +135,23 @@ race_total <- rowSums(
   )]
 )
 
-# All counts must be consistent with enrollment
 stopifnot(
+  all(headcount_panel[count_variables] >= 0),
   all(headcount_panel$enrollment > 0),
   all(gender_total == headcount_panel$enrollment),
   all(race_total == headcount_panel$enrollment),
   all(headcount_panel$poverty_count <= headcount_panel$enrollment)
 )
 
-cat("\nEnrollment and demographic counts validated.\n")
-
-
-# STEP 5: Calculate school characteristics
-
+# Calculate percentages of total school enrollment
 school_characteristics_panel <- headcount_panel |>
-  dplyr::mutate(
-    
-    # Socioeconomic composition
+  mutate(
     poverty_rate = poverty_count / enrollment * 100,
     
-    # Gender composition
     female_share = female / enrollment * 100,
     male_share = male / enrollment * 100,
     gender_missing_share = gender_missing / enrollment * 100,
     
-    # Racial/ethnic composition
     black_share = black / enrollment * 100,
     american_indian_share = american_indian / enrollment * 100,
     asian_share = asian / enrollment * 100,
@@ -168,16 +162,12 @@ school_characteristics_panel <- headcount_panel |>
     race_missing_share = race_missing / enrollment * 100
   )
 
-
-# STEP 6: Validate percentages and save
-
+# Verify all calculated percentages are valid
 percentage_variables <- c(
   "poverty_rate",
-  grep("_share$", names(school_characteristics_panel),
-       value = TRUE)
+  grep("_share$", names(school_characteristics_panel), value = TRUE)
 )
 
-# All calculated percentages must be between 0 and 100
 stopifnot(
   all(sapply(
     school_characteristics_panel[percentage_variables],
@@ -185,12 +175,10 @@ stopifnot(
   ))
 )
 
-# Save the completed characteristics panel
-dir.create(
-  "data/processed",
-  recursive = TRUE,
-  showWarnings = FALSE
-)
+
+# STEP 5: Save the dataset
+
+dir.create("data/processed", showWarnings = FALSE)
 
 write.csv(
   school_characteristics_panel,
