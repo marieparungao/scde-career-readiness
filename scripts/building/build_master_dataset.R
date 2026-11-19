@@ -9,7 +9,7 @@
 #
 # ============================================================
 
-# STEP 1: Import the two completed datasets
+# STEP 1: Import the six completed datasets
 
 # Read the career-readiness panel (our base dataset)
 readiness <- read.csv(
@@ -51,6 +51,41 @@ geography <- read.csv(
   na.strings = c("", "NA")
 )
 
+# Restrict every panel to the four-year study period
+study_years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+
+readiness <- dplyr::filter(readiness, academic_year %in% study_years)
+characteristics <- dplyr::filter(characteristics, academic_year %in% study_years)
+academic <- dplyr::filter(academic, academic_year %in% study_years)
+absenteeism <- dplyr::filter(absenteeism, academic_year %in% study_years)
+disability <- dplyr::filter(disability, academic_year %in% study_years)
+geography <- dplyr::filter(geography, academic_year %in% study_years)
+
+# Confirm all four years are present in the readiness base
+stopifnot(setequal(unique(readiness$academic_year), study_years))
+
+print(dplyr::count(readiness, academic_year))
+
+# Check that all panels have valid, unique school-year identifiers
+panels <- list(
+  readiness = readiness,
+  characteristics = characteristics,
+  academic = academic,
+  absenteeism = absenteeism,
+  disability = disability,
+  geography = geography
+)
+
+for (panel_name in names(panels)) {
+  panel <- panels[[panel_name]]
+  
+  stopifnot(
+    !anyNA(panel[c("school_id", "academic_year")]),
+    all(trimws(as.character(panel$school_id)) != ""),
+    all(trimws(as.character(panel$academic_year)) != ""),
+    !anyDuplicated(panel[c("school_id", "academic_year")])
+  )
+}
 
 # STEP 2: Check how many school-year observations match
 
@@ -92,7 +127,8 @@ master_dataset <- readiness |>
   dplyr::left_join(
     characteristics |>
       dplyr::select(-district_name, -school_name),
-    by = c("school_id", "academic_year")
+    by = c("school_id", "academic_year"),
+    relationship = "one-to-one"
   )
 
 # Confirm that the new panels have unique, nonmissing keys
@@ -175,8 +211,8 @@ master_dataset <- master_dataset |>
 cat("Master dataset observations:", nrow(master_dataset), "\n")
 cat("Master dataset variables:", ncol(master_dataset), "\n")
 
-# Count observations without matching headcount information
-cat("Missing headcount matches:",
+# Count observations with missing enrollment information
+cat("Missing enrollment values:",
     sum(is.na(master_dataset$enrollment)), "\n")
 
 # Confirm that no observations were added or lost
@@ -219,6 +255,77 @@ cat("\nMissing both readiness and poverty information:",
         is.na(master_dataset$poverty_rate)
     ), "\n")
 
+# Confirm the master contains exactly the four study years
+stopifnot(
+  setequal(unique(master_dataset$academic_year), study_years)
+)
+
+# Show observations and schools in each year
+cat("\nSample coverage by year:\n")
+
+coverage_by_year <- master_dataset |>
+  dplyr::group_by(academic_year) |>
+  dplyr::summarise(
+    observations = dplyr::n(),
+    schools = dplyr::n_distinct(school_id),
+    .groups = "drop"
+  )
+
+print(coverage_by_year)
+
+# Show missing values separately for each year
+cat("\nMissing values by year:\n")
+
+missing_by_year <- master_dataset |>
+  dplyr::group_by(academic_year) |>
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(key_variables),
+      ~ sum(is.na(.x))
+    ),
+    .groups = "drop"
+  )
+
+print(missing_by_year, width = Inf)
+
+# Show how many years each school contributes
+cat("\nNumber of years observed per school:\n")
+
+master_dataset |>
+  dplyr::count(school_id, name = "years_observed") |>
+  dplyr::count(years_observed, name = "number_of_schools") |>
+  print()
+
+# Confirm expected numeric variables were imported as numeric
+expected_numeric <- setdiff(key_variables, "locale_type")
+
+nonnumeric_variables <- expected_numeric[
+  !vapply(
+    master_dataset[expected_numeric],
+    is.numeric,
+    logical(1)
+  )
+]
+
+if (length(nonnumeric_variables) > 0) {
+  stop(
+    "Review these columns before analysis; they are not numeric: ",
+    paste(nonnumeric_variables, collapse = ", ")
+  )
+}
+# Inspect numeric ranges for unexpected values or scales
+cat("\nNumeric variable checks:\n")
+
+numeric_variables <- key_variables[
+  vapply(
+    master_dataset[key_variables],
+    is.numeric,
+    logical(1)
+  )
+]
+
+print(summary(master_dataset[numeric_variables]))
+
 # STEP 5: Save the preliminary master dataset
 
 # Confirm that school-year observations remain unique
@@ -241,23 +348,30 @@ cat("Observations:", nrow(master_dataset), "\n")
 cat("Variables:", ncol(master_dataset), "\n")
 
 # ============================================================
-# NOTES FOR FUTURE DATA CONSTRUCTION
+# MASTER DATASET NOTES
 # ============================================================
-# This is a preliminary master dataset.
+# Study period: 2022-23 through 2025-26.
+# Unit of observation: one school in one academic year.
 #
-# Current data:
+# Included data:
 # - Six career-readiness outcomes and graduation cohort size
-# - School enrollment, poverty, gender, and race/ethnicity
+# - Enrollment, poverty, gender, and race/ethnicity
+# - Geographic locale and locale source year
+# - Academic achievement points percentage
+# - Chronic absenteeism percentage
+# - Disability-composition proxy
 #
-# Missing data:
-# - 14 observations have missing career-readiness information
-# - 8 observations have no matching headcount information
-# - These groups do not overlap
+# Measurement notes:
+# - Disability share uses the absenteeism reporting population,
+#   not the graduation cohort.
+# - Career-readiness pathways overlap; their percentages
+#   should not be added together.
 #
-# TODO:
-# - Merge geographic characteristics (Script 03)
-# - Merge academic achievement (Script 04)
-# - Merge chronic absenteeism (Script 05)
-# - Merge disability status (Script 06)
-# - Recheck missing values and school coverage
+# Checks to review before analysis:
+# - School coverage and missing values by academic year
+# - Numeric ranges and percentage scales
+# - Academic achievement comparability across years
+# - Geographic source years, including carried-forward locales
+#
+# Use the current script output for missing-data counts.
 # ============================================================
