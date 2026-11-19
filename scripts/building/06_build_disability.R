@@ -1,188 +1,164 @@
 # ============================================================
-# 06: BUILD DISABILITY STATUS CHARACTERISTICS
+# 06: BUILD DISABILITY STATUS PANEL
 # ============================================================
 # Purpose: Construct a school-level disability composition
-# proxy across five academic years: 2021-22 through 2025-26.
+# proxy using chronic absenteeism reporting populations.
 #
-# Source: SC School Report Card AdditionalInfo workbooks
-# Sheet: 5b.SchoolClimate_ChronicAbs
+# Input: Validated SCDE AdditionalInfo workbooks (Script 00)
 # Output: data/processed/disability_panel.csv
 #
-# MEASURE:
-# 100 * NTotal_DI / NTotal_ALL
-#
-# This measures the disability share of the population used
-# for chronic absenteeism reporting. It is a proxy for
-# school-wide disability composition.
-#
-# REVIEW STILL NEEDED:
-# - Verify disability subgroup definitions across years
-# - Verify absenteeism reporting population eligibility
-# - Determine whether this proxy is comparable across years
+# Academic years: 2022-23 through 2025-26
+# Measure: NTotal_DI / NTotal_ALL * 100
+# Note: Based on prior-year absenteeism reporting populations,
+# not necessarily total school enrollment.
 # ============================================================
 
 
-# STEP 1: Load packages
+# STEP 1: Load packages and identify source files
+
 library(readxl)
 library(dplyr)
 
+years <- c("2022-23", "2023-24", "2024-25", "2025-26")
 
-# STEP 2: Find the source workbooks
-additional_files <- list.files(
-  "data/raw",
-  pattern = "AdditionalInfo",
-  recursive = TRUE,
-  full.names = TRUE,
-  ignore.case = TRUE
+sources <- read.csv("data/raw/scde_source_manifest.csv")
+
+additional_sources <- sources |>
+  filter(type == "additional", academic_year %in% years)
+
+stopifnot(
+  nrow(additional_sources) == length(years),
+  !anyDuplicated(additional_sources$academic_year),
+  setequal(additional_sources$academic_year, years)
 )
 
 
-# STEP 3: Import and clean one year
-build_disability <- function(filename, year_label) {
+# STEP 2: Create a function to clean one academic year
+
+clean_disability <- function(year) {
   
-  file_path <- additional_files[
-    tolower(basename(additional_files)) == tolower(filename)
+  # Locate the validated AdditionalInfo workbook
+  file <- additional_sources$file_path[
+    additional_sources$academic_year == year
   ]
   
-  # Confirm exactly one matching file exists
-  stopifnot(length(file_path) == 1)
+  if (length(file) != 1 || !file.exists(file)) {
+    stop("Missing AdditionalInfo workbook for ", year)
+  }
   
-  raw_data <- read_excel(
-    file_path,
+  # Import chronic absenteeism population data for high schools
+  raw <- read_excel(
+    file,
     sheet = "5b.SchoolClimate_ChronicAbs",
     col_types = "text"
+  ) |>
+    filter(SCHOOLTYPECD == "H")
+  
+  # Verify school identifiers before conversion
+  stopifnot(
+    nrow(raw) > 0,
+    !anyNA(raw$SCHOOLID),
+    all(grepl("^[0-9]{6,7}$", trimws(raw$SCHOOLID)))
   )
   
-  clean_data <- raw_data |>
-    filter(SCHOOLTYPECD == "H") |>
+  # Select and standardize variables
+  clean <- raw |>
     transmute(
-      school_id = sprintf("%07d", as.integer(SCHOOLID)),
-      academic_year = year_label,
-      district_name = trimws(
-        gsub("[[:space:]]+", " ", DistrictNm)
-      ),
-      school_name = trimws(
-        gsub("[[:space:]]+", " ", SchoolNm)
+      academic_year = year,
+      report_card_year = as.integer(ReportCardYear),
+      
+      # Same prior-year reporting period as chronic absenteeism
+      disability_data_year = paste0(
+        as.integer(substr(year, 1, 4)) - 1L,
+        "-", substr(year, 3, 4)
       ),
       
-      # Preserve original entries, including suppression symbols
+      school_id = sprintf("%07d", as.integer(SCHOOLID)),
+      district_name = trimws(gsub("[[:space:]]+", " ", DistrictNm)),
+      school_name = trimws(gsub("[[:space:]]+", " ", SchoolNm)),
+      
+      # Preserve original counts, including suppressed values
       disability_count_raw = NTotal_DI,
       attendance_population_raw = NTotal_ALL,
       
-      # Suppressed counts remain missing, rather than zero
-      disability_count = as.numeric(
-        na_if(trimws(NTotal_DI), "*")
-      ),
-      
-      attendance_population = as.numeric(
-        na_if(trimws(NTotal_ALL), "*")
-      )
-    ) |>
+      disability_count = NTotal_DI,
+      attendance_population = NTotal_ALL
+    )
+  
+  # Verify report-card year and unique school identifiers
+  expected_year <- as.integer(substr(year, 1, 4)) + 1L
+  
+  stopifnot(
+    !anyNA(clean$report_card_year),
+    all(clean$report_card_year == expected_year),
+    !anyDuplicated(clean$school_id)
+  )
+  
+  # Convert counts; suppressed values remain NA
+  for (variable in c("disability_count",
+                     "attendance_population")) {
+    
+    values <- gsub(",", "", trimws(clean[[variable]]))
+    values[values %in% c("*", "")] <- NA_character_
+    
+    if (any(!is.na(values) &
+            is.na(suppressWarnings(as.numeric(values))))) {
+      stop("Unexpected values in ", year, ": ", variable)
+    }
+    
+    clean[[variable]] <- as.numeric(values)
+  }
+  
+  # Calculate disability share of the reporting population
+  clean <- clean |>
     mutate(
       disability_share_attendance_pct = if_else(
-        !is.na(attendance_population) &
+        !is.na(disability_count) &
+          !is.na(attendance_population) &
           attendance_population > 0,
         100 * disability_count / attendance_population,
         NA_real_
       )
     )
   
-  return(clean_data)
+  cat(year, ":", nrow(clean), "high schools\n")
+  
+  return(clean)
 }
 
 
-# STEP 4: Build each year
-# The workbook year is the END of the academic year.
+# STEP 3: Build the four-year panel
 
-disability_2022 <- build_disability(
-  "ReportCardData_AdditionalInfo2022.XLSx",
-  "2021-22"
-)
-
-disability_2023 <- build_disability(
-  "ReportCardData_AdditionalInfo2023_3.XLSx",
-  "2022-23"
-)
-
-disability_2024 <- build_disability(
-  "ReportCardData_AdditionalInfo2024_6.XLSx",
-  "2023-24"
-)
-
-disability_2025 <- build_disability(
-  "ReportCardData_AdditionalInfo2025 5.xlsx",
-  "2024-25"
-)
-
-disability_2026 <- build_disability(
-  "ReportCardData_AdditionalInfo2026.XLSx",
-  "2025-26"
-)
+disability_panel <- years |>
+  lapply(clean_disability) |>
+  bind_rows()
 
 
-# STEP 5: Combine the five years
-disability_panel <- bind_rows(
-  disability_2022,
-  disability_2023,
-  disability_2024,
-  disability_2025,
-  disability_2026
-) |>
-  arrange(academic_year, school_id)
+# STEP 4: Validate the completed panel
 
-
-# STEP 6: Check identifiers, counts, and percentage ranges
 stopifnot(
-  !anyNA(disability_panel[c("school_id", "academic_year")]),
-  
-  all(grepl("^[0-9]{7}$", disability_panel$school_id)),
-  
   !anyDuplicated(
     disability_panel[c("school_id", "academic_year")]
   ),
-  
-  all(
-    is.na(disability_panel$disability_count) |
-      disability_panel$disability_count >= 0
-  ),
-  
-  all(
-    is.na(disability_panel$attendance_population) |
-      disability_panel$attendance_population >= 0
-  ),
-  
-  all(
-    is.na(disability_panel$disability_count) |
-      is.na(disability_panel$attendance_population) |
-      disability_panel$disability_count <=
-      disability_panel$attendance_population
-  ),
-  
-  all(
-    is.na(disability_panel$disability_share_attendance_pct) |
-      between(
-        disability_panel$disability_share_attendance_pct,
-        0, 100
-      )
-  )
+  all(is.na(disability_panel$disability_count) |
+        disability_panel$disability_count >= 0),
+  all(is.na(disability_panel$attendance_population) |
+        disability_panel$attendance_population >= 0),
+  all(is.na(disability_panel$disability_count) |
+        is.na(disability_panel$attendance_population) |
+        disability_panel$disability_count <=
+        disability_panel$attendance_population),
+  all(is.na(disability_panel$disability_share_attendance_pct) |
+        between(disability_panel$disability_share_attendance_pct,
+                0, 100))
 )
 
-# Display school coverage and missing values by year
+# Summarize school coverage and missing disability information
 print(
   disability_panel |>
-    group_by(academic_year) |>
+    group_by(academic_year, disability_data_year) |>
     summarise(
-      observations = n(),
-      missing_disability_count = sum(
-        is.na(disability_count)
-      ),
-      missing_attendance_population = sum(
-        is.na(attendance_population)
-      ),
-      zero_attendance_population = sum(
-        attendance_population == 0,
-        na.rm = TRUE
-      ),
+      schools = n(),
       missing_disability = sum(
         is.na(disability_share_attendance_pct)
       ),
@@ -190,26 +166,32 @@ print(
     )
 )
 
-
-# STEP 7: Save the dataset
-dir.create(
-  "data/processed",
-  recursive = TRUE,
-  showWarnings = FALSE
+# Check coverage against the career-readiness panel
+readiness <- read.csv(
+  "data/processed/career_readiness_panel.csv",
+  colClasses = c(school_id = "character")
 )
+
+unmatched <- anti_join(
+  readiness,
+  disability_panel,
+  by = c("school_id", "academic_year")
+)
+
+cat("Readiness observations without disability records:",
+    nrow(unmatched), "\n")
+
+
+# STEP 5: Save the dataset
+
+dir.create("data/processed", showWarnings = FALSE)
 
 write.csv(
   disability_panel,
   "data/processed/disability_panel.csv",
-  row.names = FALSE,
-  na = ""
+  row.names = FALSE
 )
 
-cat("\nDisability dataset saved successfully!\n")
-cat("School-year observations:", nrow(disability_panel), "\n")
-cat(
-  "Academic years:",
-  paste(sort(unique(disability_panel$academic_year)),
-        collapse = ", "),
-  "\n"
-)
+cat("\nDisability status panel saved successfully!\n")
+cat("Observations:", nrow(disability_panel), "\n")
+cat("Variables:", ncol(disability_panel), "\n")

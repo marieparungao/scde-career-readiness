@@ -1,72 +1,54 @@
 # ============================================================
 # 01: BUILD CAREER READINESS PANEL
 # ============================================================
-# Purpose: Combine career-readiness data from five academic
-# years into one school-level panel dataset.
-#
-# Input: Report Card researcher workbooks, report years 2022-2026
-#        (academic years 2021-22 through 2025-26)
+# Purpose: Combine four years of high-school career-readiness
+# outcomes and graduation cohort sizes into one panel.
+# Input: Validated SCDE researcher workbooks (Script 00)
 # Output: data/processed/career_readiness_panel.csv
+# Academic years: 2022-23 through 2025-26
+# ============================================================
 
+# STEP 1: Load packages and identify source files
+library(readxl)
+library(dplyr)
 
-# STEP 1: Match academic years to the actual workbooks
-input_files <- data.frame(
-  academic_year = c(
-    "2021-22",
-    "2022-23",
-    "2023-24",
-    "2024-25",
-    "2025-26"
-  ),
-  
-  filename = c(
-    "ReportCardData_forResearchers2022.XLSx",
-    "ReportCardData_forResearchers2023_3.XLSx",
-    "ReportCardData_forResearchers2024_11.xlsx",
-    "ReportCardData_forResearchers2025 5.xlsx",
-    "ReportCardData_forResearchers2026.XLSx"
-  )
+years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+
+# Read the source manifest created by Script 00
+sources <- read.csv("data/raw/scde_source_manifest.csv")
+
+researcher_sources <- sources |>
+  filter(type == "researcher", academic_year %in% years)
+
+stopifnot(
+  nrow(researcher_sources) == length(years),
+  !anyDuplicated(researcher_sources$academic_year),
+  setequal(researcher_sources$academic_year, years)
 )
 
-years <- input_files$academic_year
-
-
-# STEP 2: Create a function to clean one year of data
-
+# STEP 2: Create a function to clean one academic year
 clean_readiness <- function(year) {
-  
-  # Find the actual workbook assigned to this academic year
-  filename <- input_files$filename[
-    input_files$academic_year == year
+  file <- researcher_sources$file_path[
+    researcher_sources$academic_year == year
   ]
   
-  available_files <- list.files(
-    "data/raw",
-    recursive = TRUE,
-    full.names = TRUE
-  )
+  if (!file.exists(file)) {
+    stop("Missing researcher workbook for ", year)
+  }
   
-  file <- available_files[
-    tolower(basename(available_files)) == tolower(filename)
-  ]
-  
-  # Confirm exactly one matching workbook exists
-  stopifnot(length(file) == 1)
-  
-  raw <- readxl::read_excel(
+  raw <- read_excel(
     file,
     sheet = "4.CollegeCareer",
     col_types = "text"
-  )
+  ) |>
+    filter(SCHOOLTYPECD == "H")
   
-  # Keep high schools and select the variables we need
   clean <- raw |>
-    dplyr::filter(SCHOOLTYPECD == "H") |>
-    dplyr::transmute(
+    transmute(
       academic_year = year,
       report_card_year = as.integer(ReportCardYear),
-      district_name = DistrictNm,
-      school_name = SchoolNm,
+      district_name = trimws(gsub("[[:space:]]+", " ", DistrictNm)),
+      school_name = trimws(gsub("[[:space:]]+", " ", SchoolNm)),
       school_id = sprintf("%07d", as.integer(SCHOOLID)),
       cohort_size = NumInCohort,
       overall_readiness = PctCareer,
@@ -77,125 +59,91 @@ clean_readiness <- function(year) {
       credential_readiness = PctCred
     )
   
-  # Identify variables that should contain numbers
+  expected_year <- as.integer(substr(year, 1, 4)) + 1L
+  
+  stopifnot(
+    nrow(clean) > 0,
+    !anyNA(clean$report_card_year),
+    all(clean$report_card_year == expected_year),
+    !anyNA(clean$school_id),
+    all(grepl("^[0-9]{7}$", clean$school_id)),
+    !anyDuplicated(clean$school_id)
+  )
   numeric_variables <- c(
     "cohort_size",
-    "overall_readiness",
-    "cte_readiness",
-    "wbl_readiness",
-    "assessment_readiness",
-    "asvab_readiness",
+    "overall_readiness", "cte_readiness", "wbl_readiness",
+    "assessment_readiness", "asvab_readiness",
     "credential_readiness"
   )
   
-  # Convert numerical variables and preserve "*" as missing
   for (variable in numeric_variables) {
-    
     values <- trimws(clean[[variable]])
     values[values %in% c("*", "")] <- NA_character_
     
-    # Stop if we encounter any other unexpected text codes
-    unexpected <- unique(values[
-      !is.na(values) &
-        is.na(suppressWarnings(as.numeric(values)))
-    ])
-    
-    if (length(unexpected) > 0) {
-      stop("Unexpected values in ", year, " / ",
-           variable, ": ", paste(unexpected, collapse = ", "))
+    if (any(!is.na(values) &
+            is.na(suppressWarnings(as.numeric(values))))) {
+      stop("Unexpected values in ", year, ": ", variable)
     }
     
     clean[[variable]] <- as.numeric(values)
   }
   
-  # Check that each school appears only once in this year
-  if (anyNA(clean$school_id) ||
-      anyDuplicated(clean$school_id) > 0) {
-    stop("Missing or duplicate school IDs in ", year)
-  }
-  
-  # Display how many high schools were retained
   cat(year, ":", nrow(clean), "high schools\n")
-  
   return(clean)
 }
 
-
-# STEP 3: Apply the function to all five years
-
+# STEP 3: Build the four-year panel
 career_readiness_panel <- years |>
   lapply(clean_readiness) |>
-  dplyr::bind_rows()
+  bind_rows()
 
-
-# STEP 4: Check and save the combined dataset
-
-# Display total rows and columns
-print(dim(career_readiness_panel))
-
-# Confirm each school-year combination is unique
-stopifnot(!anyDuplicated(
-  career_readiness_panel[c("school_id", "academic_year")]
-))
-
-# Confirm that all five academic years are represented
-stopifnot(
-  setequal(career_readiness_panel$academic_year, years)
-)
-
-# Display school coverage by year
-print(
-  career_readiness_panel |>
-    dplyr::count(academic_year, name = "observations")
-)
-
-dir.create(
-  "data/processed",
-  recursive = TRUE,
-  showWarnings = FALSE
-)
-
-# Save the cleaned panel
-write.csv(
-  career_readiness_panel,
-  "data/processed/career_readiness_panel.csv",
-  row.names = FALSE
-)
-
-cat("Career-readiness panel saved successfully!\n")
-
-# STEP 5: Validate the combined dataset
-
-# Identify the six career-readiness outcomes
+# STEP 4: Validate the completed panel
 outcomes <- c(
-  "overall_readiness",
-  "cte_readiness",
-  "wbl_readiness",
-  "assessment_readiness",
-  "asvab_readiness",
+  "overall_readiness", "cte_readiness", "wbl_readiness",
+  "assessment_readiness", "asvab_readiness",
   "credential_readiness"
 )
 
-# Count missing values in each numerical variable
+stopifnot(
+  setequal(career_readiness_panel$academic_year, years),
+  !anyDuplicated(
+    career_readiness_panel[c("school_id", "academic_year")]
+  ),
+  all(sapply(
+    career_readiness_panel[outcomes],
+    function(x) all(is.na(x) | (x >= 0 & x <= 100))
+  )),
+  all(is.na(career_readiness_panel$cohort_size) |
+        career_readiness_panel$cohort_size > 0)
+)
+
+print(
+  career_readiness_panel |>
+    group_by(academic_year) |>
+    summarise(
+      schools = n(),
+      missing_readiness = sum(is.na(overall_readiness)),
+      .groups = "drop"
+    )
+)
+
 cat("\nMissing values:\n")
 print(sapply(
   career_readiness_panel[c("cohort_size", outcomes)],
   function(x) sum(is.na(x))
 ))
 
-# Check for percentages outside the valid 0-100 range
-cat("\nInvalid percentages:\n")
-print(sapply(
-  career_readiness_panel[outcomes],
-  function(x) sum(x < 0 | x > 100, na.rm = TRUE)
-))
+# STEP 5: Save the dataset
+dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
+write.csv(
+  career_readiness_panel,
+  "data/processed/career_readiness_panel.csv",
+  row.names = FALSE
+)
 
-# Check for invalid graduation-cohort sizes
-cat("\nNonpositive cohort sizes:\n")
-print(sum(
-  career_readiness_panel$cohort_size <= 0,
-  na.rm = TRUE
-))
+cat("\nCareer-readiness panel saved successfully!\n")
+cat("Observations:", nrow(career_readiness_panel), "\n")
+cat("Variables:", ncol(career_readiness_panel), "\n")
 
 # DATA NOTES:
 # "*" and blank numerical entries are retained as NA.

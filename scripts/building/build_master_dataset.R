@@ -1,45 +1,61 @@
 # ============================================================
-# BUILD MASTER CAREER READINESS DATASET
+# BUILD MASTER CAREER READINESS DATASET (RUN ALL)
 # ============================================================
-# Purpose: Merge all school-level datasets into one
-# analysis-ready panel covering four academic years.
-#
-# Inputs: Cleaned datasets in data/processed/
+# Run from the scde-career-readiness project root.
+# Rebuilds source manifest, six panels, and the master dataset.
 # Output: data/processed/career_readiness_master.csv
-#
 # ============================================================
 
-# STEP 1: Import the six completed datasets
+library(readxl)
+library(dplyr)
+options(timeout = max(600, getOption("timeout")))
 
-# Read the career-readiness panel (our base dataset)
-readiness <- read.csv(
-  "data/processed/career_readiness_panel.csv",
-  colClasses = c(school_id = "character")
+
+# STEP 1: Run source validation and all six construction scripts
+
+script_dir <- "scripts/building"
+
+scripts <- c(
+  "00_download_data.R",
+  "01_build_readiness.R",
+  "02_build_characteristics.R",
+  "03_build_geography.R",
+  "04_build_academic.R",
+  "05_build_absenteeism.R",
+  "06_build_disability.R"
 )
 
-# Read the school-characteristics panel
-characteristics <- read.csv(
-  "data/processed/school_characteristics_panel.csv",
-  colClasses = c(school_id = "character")
-)
+paths <- file.path(script_dir, scripts)
 
-# Read the academic achievement panel
-academic <- read.csv(
-  "data/processed/academic_panel.csv",
-  colClasses = c(school_id = "character")
-)
+if (!all(file.exists(paths))) {
+  stop(
+    "Missing construction scripts: ",
+    paste(paths[!file.exists(paths)], collapse = ", "),
+    ". Run this file from the project root."
+  )
+}
+for (script in paths) {
+  cat("\n=== Running", basename(script), "===\n")
+  source(script, local = new.env(parent = globalenv()))
+}
 
-# Read the absenteeism panel
-absenteeism <- read.csv(
-  "data/processed/absenteeism_panel.csv",
-  colClasses = c(school_id = "character")
-)
+# STEP 2: Import the completed panels
 
-# Read the disability panel
-disability <- read.csv(
-  "data/processed/disability_panel.csv",
-  colClasses = c(school_id = "character")
-)
+read_panel <- function(filename) {
+  read.csv(
+    file.path("data/processed", filename),
+    colClasses = c(
+      school_id = "character",
+      academic_year = "character"
+    )
+  )
+}
+
+readiness <- read_panel("career_readiness_panel.csv")
+characteristics <- read_panel("school_characteristics_panel.csv")
+academic <- read_panel("academic_panel.csv")
+absenteeism <- read_panel("absenteeism_panel.csv")
+disability <- read_panel("disability_panel.csv")
 
 geography <- read.csv(
   "data/processed/geography_panel.csv",
@@ -50,23 +66,16 @@ geography <- read.csv(
   ),
   na.strings = c("", "NA")
 )
-
 # Restrict every panel to the four-year study period
-study_years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+expected_years <- c("2022-23", "2023-24", "2024-25", "2025-26")
 
-readiness <- dplyr::filter(readiness, academic_year %in% study_years)
-characteristics <- dplyr::filter(characteristics, academic_year %in% study_years)
-academic <- dplyr::filter(academic, academic_year %in% study_years)
-absenteeism <- dplyr::filter(absenteeism, academic_year %in% study_years)
-disability <- dplyr::filter(disability, academic_year %in% study_years)
-geography <- dplyr::filter(geography, academic_year %in% study_years)
+readiness <- filter(readiness, academic_year %in% expected_years)
+characteristics <- filter(characteristics, academic_year %in% expected_years)
+academic <- filter(academic, academic_year %in% expected_years)
+absenteeism <- filter(absenteeism, academic_year %in% expected_years)
+disability <- filter(disability, academic_year %in% expected_years)
+geography <- filter(geography, academic_year %in% expected_years)
 
-# Confirm all four years are present in the readiness base
-stopifnot(setequal(unique(readiness$academic_year), study_years))
-
-print(dplyr::count(readiness, academic_year))
-
-# Check that all panels have valid, unique school-year identifiers
 panels <- list(
   readiness = readiness,
   characteristics = characteristics,
@@ -76,151 +85,99 @@ panels <- list(
   geography = geography
 )
 
-for (panel_name in names(panels)) {
-  panel <- panels[[panel_name]]
+keys <- c("school_id", "academic_year")
+
+# Validate school-year identifiers in every panel
+for (name in names(panels)) {
+  panel <- panels[[name]]
   
   stopifnot(
-    !anyNA(panel[c("school_id", "academic_year")]),
-    all(trimws(as.character(panel$school_id)) != ""),
+    !anyNA(panel[keys]),
+    !anyDuplicated(panel[keys]),
     all(trimws(as.character(panel$academic_year)) != ""),
-    !anyDuplicated(panel[c("school_id", "academic_year")])
+    all(grepl("^[0-9]{7}$", panel$school_id)),
+    all(panel$academic_year %in% expected_years)
   )
 }
-
-# STEP 2: Check how many school-year observations match
-
-# Find readiness observations with a matching characteristics record
-matched <- dplyr::inner_join(
-  readiness,
-  characteristics,
-  by = c("school_id", "academic_year")
-)
-
-# Find readiness observations without a matching record
-unmatched <- dplyr::anti_join(
-  readiness,
-  characteristics,
-  by = c("school_id", "academic_year")
-)
-
-# Display the results
-cat("Readiness observations:", nrow(readiness), "\n")
-cat("Matched observations:", nrow(matched), "\n")
-cat("Unmatched observations:", nrow(unmatched), "\n")
-
-# Display unmatched schools, if any
-print(
-  unmatched[, c("academic_year", "school_id", "school_name")],
-  row.names = FALSE
-)
-
-# STEP 3: Merge career readiness and school characteristics
-
-# Confirm school-year identifiers are unique in both datasets
 stopifnot(
-  !anyDuplicated(readiness[c("school_id", "academic_year")]),
-  !anyDuplicated(characteristics[c("school_id", "academic_year")])
+  setequal(unique(readiness$academic_year), expected_years)
 )
 
-# Merge school characteristics into our readiness panel
+
+# STEP 3: Merge all panels, preserving the readiness sample
+
 master_dataset <- readiness |>
-  dplyr::left_join(
-    characteristics |>
-      dplyr::select(-district_name, -school_name),
-    by = c("school_id", "academic_year"),
+  left_join(
+    select(characteristics, -district_name, -school_name),
+    by = keys,
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    select(
+      academic, all_of(keys),
+      academic_achievement_points_pct
+    ),
+    by = keys,
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    select(
+      absenteeism, all_of(keys),
+      absenteeism_data_year,
+      chronic_absenteeism_pct
+    ),
+    by = keys,
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    select(
+      disability, all_of(keys),
+      disability_data_year,
+      disability_share_attendance_pct
+    ),
+    by = keys,
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    select(
+      geography, all_of(keys),
+      nces_school_id,
+      locale_code,
+      locale_type,
+      locale_source_year,
+      locale_carried_forward
+    ),
+    by = keys,
     relationship = "one-to-one"
   )
-
-# Confirm that the new panels have unique, nonmissing keys
-for (panel in list(academic, absenteeism, disability)) {
-  
-  stopifnot(
-    !anyNA(panel[c("school_id", "academic_year")]),
-    
-    !anyDuplicated(
-      panel[c("school_id", "academic_year")]
-    )
-  )
-}
-
-# Add academic achievement
-master_dataset <- master_dataset |>
-  dplyr::left_join(
-    academic |>
-      dplyr::select(
-        school_id,
-        academic_year,
-        academic_achievement_points_pct
-      ),
-    by = c("school_id", "academic_year"),
-    relationship = "one-to-one"
-  )
-
-# Add chronic absenteeism
-master_dataset <- master_dataset |>
-  dplyr::left_join(
-    absenteeism |>
-      dplyr::select(
-        school_id,
-        academic_year,
-        chronic_absenteeism_pct
-      ),
-    by = c("school_id", "academic_year"),
-    relationship = "one-to-one"
-  )
-
-# Add the disability-composition proxy
-master_dataset <- master_dataset |>
-  dplyr::left_join(
-    disability |>
-      dplyr::select(
-        school_id,
-        academic_year,
-        disability_share_attendance_pct
-      ),
-    by = c("school_id", "academic_year"),
-    relationship = "one-to-one"
-  )
-
-# Check geographic merge keys
+# Confirm no schools were added, removed, or duplicated
 stopifnot(
-  !anyNA(geography[c("school_id", "academic_year")]),
-  
-  !anyDuplicated(
-    geography[c("school_id", "academic_year")]
-  )
+  nrow(master_dataset) == nrow(readiness),
+  identical(master_dataset[keys], readiness[keys]),
+  !anyDuplicated(master_dataset[keys])
 )
-
-# Add historical geographic characteristics
-master_dataset <- master_dataset |>
-  dplyr::left_join(
-    geography |>
-      dplyr::select(
-        school_id,
-        academic_year,
-        nces_school_id,
-        locale_code,
-        locale_type,
-        locale_source_year
-      ),
-    by = c("school_id", "academic_year"),
-    relationship = "one-to-one"
-  )
-
-# Verify that the merge preserved our readiness sample
-cat("Master dataset observations:", nrow(master_dataset), "\n")
-cat("Master dataset variables:", ncol(master_dataset), "\n")
 
 # Count observations with missing enrollment information
 cat("Missing enrollment values:",
     sum(is.na(master_dataset$enrollment)), "\n")
 
-# Confirm that no observations were added or lost
-stopifnot(nrow(master_dataset) == nrow(readiness))
+# STEP 4: Report school coverage and missing values
 
-# STEP 4: Check missing values in the master dataset
+cat("\n=== Master dataset checks ===\n")
+cat("Readiness observations retained:", nrow(master_dataset), "\n")
+cat("Master variables:", ncol(master_dataset), "\n")
 
-# Count missing values in our key variables
+# Count readiness observations without matching source records
+cat("\nReadiness observations without source-panel records:\n")
+
+for (name in setdiff(names(panels), "readiness")) {
+  missing_matches <- nrow(
+    anti_join(readiness, panels[[name]], by = keys)
+  )
+  
+  cat(name, ": ", missing_matches, "\n", sep = "")
+}
+# Check missing values in key analysis variables
 key_variables <- c(
   "cohort_size",
   "overall_readiness",
@@ -240,29 +197,21 @@ key_variables <- c(
   "locale_type"
 )
 
-cat("\nMissing values in key variables:\n")
+cat("\nMissing values in analysis variables:\n")
 
 print(sapply(
   master_dataset[key_variables],
   function(x) sum(is.na(x))
 ))
 
-# Check whether missing readiness and characteristics
-# information occur in the same school-year observations
-cat("\nMissing both readiness and poverty information:",
-    sum(
-      is.na(master_dataset$overall_readiness) &
-        is.na(master_dataset$poverty_rate)
-    ), "\n")
 
 # Confirm the master contains exactly the four study years
 stopifnot(
-  setequal(unique(master_dataset$academic_year), study_years)
+  setequal(unique(master_dataset$academic_year), expected_years)
 )
 
 # Show observations and schools in each year
 cat("\nSample coverage by year:\n")
-
 coverage_by_year <- master_dataset |>
   dplyr::group_by(academic_year) |>
   dplyr::summarise(
@@ -295,7 +244,6 @@ master_dataset |>
   dplyr::count(school_id, name = "years_observed") |>
   dplyr::count(years_observed, name = "number_of_schools") |>
   print()
-
 # Confirm expected numeric variables were imported as numeric
 expected_numeric <- setdiff(key_variables, "locale_type")
 
@@ -326,23 +274,13 @@ numeric_variables <- key_variables[
 
 print(summary(master_dataset[numeric_variables]))
 
-# STEP 5: Save the preliminary master dataset
+# STEP 5: Save the completed master dataset
 
-# Confirm that school-year observations remain unique
-stopifnot(
-  !anyDuplicated(
-    master_dataset[c("school_id", "academic_year")]
-  )
-)
-
-# Save the combined dataset
 write.csv(
   master_dataset,
   "data/processed/career_readiness_master.csv",
   row.names = FALSE
 )
-
-# Confirm successful completion
 cat("\nMaster dataset saved successfully!\n")
 cat("Observations:", nrow(master_dataset), "\n")
 cat("Variables:", ncol(master_dataset), "\n")
@@ -372,6 +310,3 @@ cat("Variables:", ncol(master_dataset), "\n")
 # - Numeric ranges and percentage scales
 # - Academic achievement comparability across years
 # - Geographic source years, including carried-forward locales
-#
-# Use the current script output for missing-data counts.
-# ============================================================

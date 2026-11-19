@@ -1,72 +1,34 @@
 # ============================================================
 # 02: BUILD SCHOOL CHARACTERISTICS PANEL
 # ============================================================
-# Purpose: Combine five years of SCDE headcount data.
+# Purpose: Construct school-level enrollment, poverty,
+# gender, and racial/ethnic characteristics.
 #
-# Academic years: 2021-22 through 2025-26
-# Snapshot: 135-day for every year
-#
-# Variables:
-# - Active, funded enrollment
-# - Poverty rate
-# - Gender composition
-# - Racial/ethnic composition
-#
-# Original counts are retained alongside percentages.
-# Imports all school levels; the readiness panel determines
-# the high-school sample when datasets are merged.
-#
+# Input: Validated SCDE 135-day headcounts (Script 00)
 # Output: data/processed/school_characteristics_panel.csv
 #
-# NOTE:
-# The enrollment eligibility wording changes in 2025-26.
-# Its implications for comparability remain under review.
+# Academic years: 2022-23 through 2025-26
+# Includes all schools; the master dataset selects high schools.
+# Original counts and headcount source metadata are retained.
 # ============================================================
 
 
-# STEP 1: Identify the exact source files
-input_files <- data.frame(
-  academic_year = c(
-    "2021-22",
-    "2022-23",
-    "2023-24",
-    "2024-25",
-    "2025-26"
-  ),
-  
-  source_year = c(
-    "2021-2022",
-    "2022-2023",
-    "2023-2024",
-    "2024-2025",
-    "2025-2026"
-  ),
-  
-  filename = c(
-    paste0(
-      "135 Day - School Headcount by Gender, Ethnicity ",
-      "and Pupils in Poverty - 2021-22.xlsx"
-    ),
-    paste0(
-      "School Headcount by Gender, Ethnicity ",
-      "and Pupils in Poverty - 2022-2023.xlsx"
-    ),
-    "School Headcount by Gender, Ethnicity and Pupils in Poverty.xlsx",
-    "School Headcount by Gender, Ethnicity and Pupils in Poverty (1).xlsx",
-    "School Headcount by Gender, Ethnicity and Pupils in Poverty (2).xlsx"
-  ),
-  
-  headcount_day = rep(135L, 5)
-)
+# STEP 1: Load packages and identify source files
 
-years <- input_files$academic_year
+library(readxl)
+library(dplyr)
 
-headcount_files <- list.files(
-  "data/raw",
-  pattern = "\\.xlsx$",
-  recursive = TRUE,
-  full.names = TRUE,
-  ignore.case = TRUE
+years <- c("2022-23", "2023-24", "2024-25", "2025-26")
+
+sources <- read.csv("data/raw/scde_source_manifest.csv")
+
+headcount_sources <- sources |>
+  filter(type == "headcount", academic_year %in% years)
+
+stopifnot(
+  nrow(headcount_sources) == length(years),
+  !anyDuplicated(headcount_sources$academic_year),
+  setequal(headcount_sources$academic_year, years)
 )
 
 count_variables <- c(
@@ -77,31 +39,22 @@ count_variables <- c(
 )
 
 
+
+
 # STEP 2: Create a function to clean one year
 clean_headcounts <- function(year) {
   
-  source_info <- input_files[
-    input_files$academic_year == year,
+  # Locate the validated 135-day headcount workbook
+  file <- headcount_sources$file_path[
+    headcount_sources$academic_year == year
   ]
   
-  stopifnot(nrow(source_info) == 1)
-  
-  file <- headcount_files[
-    tolower(basename(headcount_files)) ==
-      tolower(source_info$filename)
-  ]
-  
-  if (length(file) != 1) {
-    stop(
-      "Expected exactly one workbook named: ",
-      source_info$filename,
-      ". Found: ",
-      length(file)
-    )
+  if (!file.exists(file)) {
+    stop("Missing headcount workbook for ", year)
   }
   
-  # Check the year and snapshot in cell A2
-  header <- readxl::read_excel(
+  # Verify the workbook title identifies the requested year and snapshot.
+  header <- read_excel(
     file,
     sheet = 1,
     range = "A2",
@@ -110,71 +63,51 @@ clean_headcounts <- function(year) {
   )
   
   title <- as.character(header[[1]][1])
-  
-  # Remove punctuation so hyphens and en dashes match
   title_digits <- gsub("[^0-9]", "", title)
-  expected_year <- gsub("[^0-9]", "", source_info$source_year)
+  start_year <- as.integer(substr(year, 1, 4))
+  expected_year_digits <- paste0(start_year, start_year + 1L)
   
   if (
     is.na(title) ||
-    !grepl(expected_year, title_digits, fixed = TRUE) ||
+    !grepl(expected_year_digits, title_digits, fixed = TRUE) ||
     !grepl("135-Day", title, fixed = TRUE)
   ) {
-    stop(
-      "Unexpected year or snapshot in ",
-      basename(file),
-      ": ",
-      title
-    )
+    stop("Unexpected year or snapshot in ", basename(file), ": ", title)
   }
-  
-  # Read data after the seven header rows
-  raw <- readxl::read_excel(
+  # Read school records after the seven header rows
+  raw <- read_excel(
     file,
-    sheet = 1,
+    sheet = "school by gender race pip",
     skip = 7,
     col_names = FALSE,
     col_types = "text",
     .name_repair = "minimal"
   )
   
-  if (ncol(raw) != 16) {
-    stop("Unexpected column count in ", year)
-  }
+  stopifnot(ncol(raw) == 16)
   
+  # Assign descriptive column names
   names(raw) <- c(
     "school_id", "district_name", "school_name",
-    "enrollment", "female", "male", "gender_missing",
-    "black", "american_indian", "asian", "hispanic",
-    "pacific_islander", "multiracial", "white",
-    "race_missing", "poverty_count"
+    count_variables
   )
   
   # Keep school records and standardize identifiers
-  raw <- raw |>
-    dplyr::filter(
-      grepl("^[0-9]{6,7}$", trimws(school_id))
-    ) |>
-    dplyr::mutate(
-      school_id = sprintf(
-        "%07d",
-        as.integer(trimws(school_id))
-      ),
-      district_name = trimws(
-        gsub("[[:space:]]+", " ", district_name)
-      ),
-      school_name = trimws(
-        gsub("[[:space:]]+", " ", school_name)
-      ),
+  clean <- raw |>
+    filter(grepl("^[0-9]{6,7}$", trimws(school_id))) |>
+    mutate(
       academic_year = year,
-      headcount_day = source_info$headcount_day,
-      headcount_source_file = basename(file)
+      headcount_day = 135L,
+      headcount_source_file = basename(file),
+      school_id = sprintf("%07d", as.integer(school_id)),
+      district_name = trimws(gsub("[[:space:]]+", " ", district_name)),
+      school_name = trimws(gsub("[[:space:]]+", " ", school_name))
     )
   
-  # Convert counts without treating missing entries as zero
+  # Convert student counts to numeric values
   for (variable in count_variables) {
     
-    values <- gsub(",", "", trimws(raw[[variable]]))
+    values <- gsub(",", "", trimws(clean[[variable]]))
     values[values %in% c("*", "")] <- NA_character_
     
     unexpected <- unique(values[
@@ -189,25 +122,27 @@ clean_headcounts <- function(year) {
       )
     }
     
-    raw[[variable]] <- as.numeric(values)
+    clean[[variable]] <- as.numeric(values)
   }
   
+  # Confirm school records exist and identifiers are unique
   stopifnot(
-    nrow(raw) > 0,
-    !anyNA(raw$school_id),
-    !anyDuplicated(raw$school_id)
+    nrow(clean) > 0,
+    !anyNA(clean$school_id),
+    !anyDuplicated(clean$school_id)
   )
   
-  cat(year, ":", nrow(raw), "schools\n")
+  cat(year, ":", nrow(clean), "schools\n")
   
-  return(raw)
+  return(clean)
 }
 
 
-# STEP 3: Combine all five years
+# STEP 3: Build the four-year panel
+
 headcount_panel <- years |>
   lapply(clean_headcounts) |>
-  dplyr::bind_rows()
+  bind_rows()
 
 stopifnot(
   setequal(headcount_panel$academic_year, years),
@@ -221,8 +156,14 @@ stopifnot(
   all(headcount_panel$headcount_day == 135L)
 )
 
+# STEP 4: Validate counts and calculate characteristics
+stopifnot(
+  !anyDuplicated(
+    headcount_panel[c("school_id", "academic_year")]
+  )
+)
 
-# STEP 4: Validate student counts
+# Verify that demographic totals equal school enrollment
 gender_total <- rowSums(
   headcount_panel[c("female", "male", "gender_missing")]
 )
@@ -311,7 +252,6 @@ invalid_percentages <- sapply(
   }
 )
 
-print(invalid_percentages)
 
 stopifnot(all(invalid_percentages == 0))
 
@@ -341,8 +281,6 @@ write.csv(
 )
 
 cat("\nSchool characteristics panel saved successfully!\n")
-cat(
-  "School-year observations:",
-  nrow(school_characteristics_panel),
-  "\n"
-)
+cat("Observations:", nrow(school_characteristics_panel), "\n")
+cat("Variables:", ncol(school_characteristics_panel), "\n")
+    
