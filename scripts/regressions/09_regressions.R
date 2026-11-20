@@ -10,6 +10,7 @@
 #
 # Main models: Year fixed effects only
 # Standard errors: Clustered by school
+# Significance: 95% confidence level (p < 0.05)
 #
 # Outputs:
 # - Regression tables
@@ -17,6 +18,7 @@
 # - Missing-data diagnostics
 # - Coefficient tables and plots by characteristic
 # - Regression significance heatmap
+# - Combined geographic regression figure and table
 #
 # Run from the scde-career-readiness project root.
 # ============================================================
@@ -30,6 +32,26 @@ library(fixest)
 library(dplyr)
 library(ggplot2)
 library(tidyr)
+
+# Use one significance threshold for all regression tables.
+# One asterisk (*) indicates p < 0.05.
+
+# ============================================================
+# REGRESSION TABLE SETTINGS: 95% CONFIDENCE
+# ============================================================
+
+# Set a single significance threshold for all tables
+fixest::setFixest_etable(
+  style.df = fixest::style.df(
+    signif.code = c("*" = 0.05)
+  ),
+  style.tex = fixest::style.tex(
+    signif.code = c("*" = 0.05)
+  )
+)
+
+# Use fixest::etable directly, without a wrapper function
+etable95 <- fixest::etable
 
 # Create output folders
 dir.create(
@@ -67,13 +89,13 @@ stopifnot(
   !anyDuplicated(master[c("school_id", "academic_year")])
 )
 
-# Set City as the reference category
+# Set City as the geographic reference category
 master$locale_type <- factor(
   master$locale_type,
   levels = c("City", "Rural", "Suburb", "Town")
 )
 
-cat("\nGeographic locale reference category: City\n")
+cat("\nGeographic reference category: City\n")
 
 
 # ============================================================
@@ -130,19 +152,19 @@ for (outcome in outcomes) {
 
 cat("\n=== YEAR FIXED-EFFECTS REGRESSIONS ===\n")
 
-# Display all six models
-print(etable(models))
+# Display six models
+print(etable95(models))
 
-# Display detailed overall-readiness model
+# Detailed overall-readiness model
 print(summary(models[["overall_readiness"]]))
 
-# Show sample sizes
+# Show observations used
 cat("\nObservations used in each model:\n")
 print(sapply(models, nobs))
 
-# Save regression table
+# Save readable regression table
 writeLines(
-  capture.output(etable(models)),
+  capture.output(etable95(models)),
   "outputs/regressions/year_effects_results.txt"
 )
 
@@ -152,8 +174,8 @@ saveRDS(
   "outputs/regressions/year_effects_models.rds"
 )
 
-# Save HTML table
-etable(
+# Save HTML regression table
+etable95(
   models,
   tex = FALSE,
   file = "outputs/regressions/year_effects_table.html"
@@ -164,8 +186,9 @@ etable(
 # STEP 4: SENSITIVITY CHECK - EXCLUDE COHORTS BELOW 30
 # ============================================================
 
-# This checks whether results change when excluding
-# schools with very small graduation cohorts.
+# Examine whether regression estimates change when
+# schools with graduation cohorts smaller than 30
+# students are excluded.
 
 models_cohort30 <- list()
 
@@ -205,14 +228,14 @@ for (outcome in outcomes) {
 cat("\n=== COHORT-SIZE SENSITIVITY CHECK ===\n")
 
 # Compare overall readiness
-print(etable(
+print(etable95(
   models[["overall_readiness"]],
   models_cohort30[["overall_readiness"]],
   headers = c("Full sample", "Cohorts >= 30")
 ))
 
 # Compare CTE readiness
-print(etable(
+print(etable95(
   models[["cte_readiness"]],
   models_cohort30[["cte_readiness"]],
   headers = c("Full sample", "Cohorts >= 30")
@@ -220,7 +243,7 @@ print(etable(
 
 # Save sensitivity results
 writeLines(
-  capture.output(etable(models_cohort30)),
+  capture.output(etable95(models_cohort30)),
   "outputs/regressions/cohort30_sensitivity.txt"
 )
 
@@ -234,7 +257,9 @@ saveRDS(
 # STEP 5: EXAMINE MISSING DATA AND SAMPLE EXCLUSIONS
 # ============================================================
 
-# Define variables needed for the overall-readiness model
+# Identify observations with complete data for
+# the overall-readiness regression.
+
 required_variables <- c(
   "overall_readiness",
   controls,
@@ -250,14 +275,16 @@ sample_check$regression_sample <- ifelse(
   "Excluded: missing data"
 )
 
-# Count included and excluded observations by year
+# Count included/excluded observations by academic year
 sample_by_year <- sample_check |>
   count(academic_year, regression_sample)
 
 cat("\n=== REGRESSION SAMPLE BY YEAR ===\n")
 print(sample_by_year)
 
-# Compare characteristics of included and excluded observations
+# Compare observed characteristics of included
+# and excluded school-year observations.
+
 comparison_variables <- c(
   "overall_readiness",
   "cohort_size",
@@ -296,7 +323,7 @@ locale_comparison <- sample_check |>
 
 print(locale_comparison)
 
-# Save sample diagnostics
+# Save diagnostics
 write.csv(
   sample_by_year,
   "outputs/regressions/sample_inclusion_by_year.csv",
@@ -320,17 +347,21 @@ write.csv(
 # STEP 6: EXTRACT REGRESSION COEFFICIENTS
 # ============================================================
 
-# Convert regression output into a dataset for visualization
+# Extract coefficients, clustered standard errors,
+# p-values and model-based 95% confidence intervals.
 
 extract_results <- function(model_list) {
   
   bind_rows(lapply(names(model_list), function(outcome) {
     
     model <- model_list[[outcome]]
+    
     ct <- as.data.frame(coeftable(model))
     
-    # Obtain model-based confidence intervals
-    ci <- confint(model)
+    ci <- confint(
+      model,
+      level = 0.95
+    )
     
     data.frame(
       outcome = outcome,
@@ -349,7 +380,7 @@ results <- extract_results(models)
 
 
 # ============================================================
-# STEP 7: ADD READABLE VARIABLE LABELS
+# STEP 7: ADD READABLE LABELS AND 95% SIGNIFICANCE
 # ============================================================
 
 outcome_labels <- c(
@@ -375,28 +406,53 @@ characteristic_labels <- c(
   cohort_size = "Graduation Cohort Size"
 )
 
+# One significance threshold: p < 0.05
+
 results <- results |>
   mutate(
     outcome_label = unname(outcome_labels[outcome]),
+    
     characteristic_label =
       unname(characteristic_labels[characteristic]),
-    significance = case_when(
-      p_value < 0.001 ~ "***",
-      p_value < 0.01 ~ "**",
-      p_value < 0.05 ~ "*",
-      p_value < 0.10 ~ ".",
-      TRUE ~ ""
+    
+    significant_95 = p_value < 0.05,
+    
+    significance = if_else(
+      significant_95,
+      "*",
+      ""
     ),
-    significant_5pct = p_value < 0.05
+    
+    significance_label = if_else(
+      significant_95,
+      "Significant",
+      "Not significant"
+    )
   )
 
-# Check that all coefficients received labels
+# Confirm all labels are valid
 stopifnot(
   !anyNA(results$outcome_label),
   !anyNA(results$characteristic_label)
 )
 
-# Save complete coefficient results
+# Confirm p-value classification agrees with
+# exclusion of zero from 95% confidence intervals.
+
+ci_significant <- (
+  results$ci_low > 0 |
+    results$ci_high < 0
+)
+
+stopifnot(
+  !anyNA(ci_significant),
+  identical(
+    as.logical(results$significant_95),
+    as.logical(ci_significant)
+  )
+)
+
+# Save coefficient dataset
 write.csv(
   results,
   "outputs/regressions/all_coefficients.csv",
@@ -405,10 +461,10 @@ write.csv(
 
 
 # ============================================================
-# STEP 8: CREATE A TABLE AND FIGURE FOR EACH CHARACTERISTIC
+# STEP 8: TABLE AND FIGURE FOR EACH CHARACTERISTIC
 # ============================================================
 
-# Consistent ordering of readiness outcomes
+# Consistent outcome ordering
 outcome_order <- c(
   "Overall Readiness",
   "CTE",
@@ -430,7 +486,7 @@ for (variable in unique(results$characteristic)) {
     )
   
   # ----------------------------------------------------------
-  # A. Export a readable coefficient table
+  # A. CHARACTERISTIC-SPECIFIC COEFFICIENT TABLE
   # ----------------------------------------------------------
   
   characteristic_table <- subset_results |>
@@ -438,8 +494,11 @@ for (variable in unique(results$characteristic)) {
       Outcome = as.character(outcome_label),
       Coefficient = round(estimate, 4),
       `Standard Error` = round(std_error, 4),
+      `95% CI Lower` = round(ci_low, 4),
+      `95% CI Upper` = round(ci_high, 4),
       `p-value` = round(p_value, 4),
-      Significance = significance
+      Significance = significance_label,
+      Star = significance
     )
   
   write.csv(
@@ -453,7 +512,7 @@ for (variable in unique(results$characteristic)) {
   )
   
   # ----------------------------------------------------------
-  # B. Generate coefficient plot
+  # B. CHARACTERISTIC-SPECIFIC COEFFICIENT PLOT
   # ----------------------------------------------------------
   
   p <- ggplot(
@@ -479,7 +538,7 @@ for (variable in unique(results$characteristic)) {
       linewidth = 0.8
     ) +
     geom_point(
-      aes(color = significant_5pct),
+      aes(color = significant_95),
       size = 3
     ) +
     scale_color_manual(
@@ -487,26 +546,29 @@ for (variable in unique(results$characteristic)) {
         "FALSE" = "#8C96A0",
         "TRUE" = "#234B70"
       ),
+      breaks = c(FALSE, TRUE),
       labels = c(
-        "FALSE" = "Not significant",
-        "TRUE" = "Significant (p < 0.05)"
+        "Not significant",
+        "Significant (p < 0.05)"
       ),
       name = NULL
     ) +
     labs(
       title = characteristic_labels[[variable]],
       subtitle = "Year fixed-effects regression estimates",
-      x = "Regression coefficient (95% CI)",
+      x = "Regression coefficient (95% confidence interval)",
       y = NULL,
       caption = paste(
-        "Year fixed effects included.",
-        "Standard errors clustered by school."
+        "Statistical significance assessed at p < 0.05.",
+        "Year fixed effects included; SE clustered by school."
       )
     ) +
     theme_minimal(base_size = 12) +
     theme(
       legend.position = "bottom"
     )
+  
+  print(p)
   
   ggsave(
     paste0(
@@ -523,25 +585,31 @@ for (variable in unique(results$characteristic)) {
 
 cat("\nCharacteristic tables and figures saved.\n")
 
+
 # ============================================================
-# STEP 9: CREATE IMPROVED REGRESSION HEATMAP
+# STEP 9: REGRESSION HEATMAP - 95% CONFIDENCE
 # ============================================================
 
-# Instead of coloring by coefficient magnitude,
-# classify each relationship by direction and significance.
+# Classify all coefficients using one threshold.
 #
-# This avoids misleading comparisons between coefficients
-# measured in different units.
+# Blue: significant positive
+# Coral: significant negative
+# Gray: not statistically significant
+#
+# One asterisk indicates p < 0.05.
 
 heatmap_data <- results |>
   mutate(
     relationship = case_when(
-      p_value < 0.05 & estimate > 0 ~
+      significant_95 & estimate > 0 ~
         "Significant positive",
-      p_value < 0.05 & estimate < 0 ~
+      
+      significant_95 & estimate < 0 ~
         "Significant negative",
+      
       TRUE ~ "Not significant"
     ),
+    
     relationship = factor(
       relationship,
       levels = c(
@@ -550,17 +618,20 @@ heatmap_data <- results |>
         "Significant positive"
       )
     ),
+    
     outcome_label = factor(
       outcome_label,
       levels = outcome_order
     ),
+    
     characteristic_label = factor(
       characteristic_label,
       levels = rev(unname(characteristic_labels))
     ),
+    
     result_label = ifelse(
-      p_value < 0.05,
-      significance,
+      significant_95,
+      "*",
       ""
     )
   )
@@ -596,9 +667,9 @@ p_heatmap <- ggplot(
     x = NULL,
     y = NULL,
     caption = paste(
-      "Colored cells indicate associations significant",
-      "at p < 0.05. Standard errors clustered by school.",
-      "*, **, *** indicate p < 0.05, 0.01, and 0.001."
+      "* indicates statistical significance at p < 0.05.",
+      "Year fixed effects included.",
+      "Standard errors clustered by school."
     )
   ) +
   theme_minimal(base_size = 11) +
@@ -623,57 +694,74 @@ ggsave(
 
 
 # ============================================================
-# STEP 10: FINAL OUTPUT MESSAGE
+# STEP 10: COMBINED GEOGRAPHIC REGRESSION COMPARISON
 # ============================================================
 
-cat("\n============================================\n")
-cat("REGRESSION ANALYSIS COMPLETED SUCCESSFULLY\n")
-cat("============================================\n")
+# Compare all four locale types in one figure and table.
+#
+# City is the reference category with coefficient zero.
+# Rural, Suburb and Town are estimated relative to City.
+#
+# Include 95% confidence intervals and one significance
+# threshold (p < 0.05).
 
-cat("\nMain specification: Year fixed effects only\n")
-cat("Standard errors: Clustered by school\n")
-cat("Outcomes analyzed:", length(outcomes), "\n")
-
-cat("\nResults saved to:\n")
-cat("outputs/regressions/\n")
-cat("outputs/regressions/figures/\n")
-
-# ============================================================
-# STEP 11: COMBINED GEOGRAPHIC REGRESSION COMPARISON
-# ============================================================
-# Compare all four locales across six readiness outcomes.
-# City is the reference category (coefficient = 0).
-# All other coefficients are relative to City.
-# ============================================================
-
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-
-# Create geographic coefficient dataset
-geo_results <- results |>
-  filter(grepl("^locale_type", characteristic)) |>
-  mutate(
-    locale = sub("locale_type", "", characteristic)
+# Extract geographic coefficients
+geo_estimates <- results |>
+  filter(
+    characteristic %in% c(
+      "locale_typeRural",
+      "locale_typeSuburb",
+      "locale_typeTown"
+    )
   ) |>
-  select(outcome_label, locale, estimate, p_value)
+  mutate(
+    locale = sub(
+      "locale_type",
+      "",
+      characteristic
+    )
+  ) |>
+  select(
+    outcome_label,
+    locale,
+    estimate,
+    ci_low,
+    ci_high,
+    p_value,
+    significant_95,
+    significance
+  )
 
-# Add City as the reference category
+# Check that all expected coefficients exist
+stopifnot(nrow(geo_estimates) == 18)
+
+# Add City as reference category.
+# City has no separately estimated confidence interval.
+
 city_reference <- data.frame(
-  outcome_label = unique(geo_results$outcome_label),
+  outcome_label = unique(geo_estimates$outcome_label),
   locale = "City",
   estimate = 0,
-  p_value = NA_real_
+  ci_low = NA_real_,
+  ci_high = NA_real_,
+  p_value = NA_real_,
+  significant_95 = FALSE,
+  significance = ""
 )
 
 geo_results <- bind_rows(
-  geo_results,
+  geo_estimates,
   city_reference
 ) |>
   mutate(
     locale = factor(
       locale,
-      levels = c("City", "Rural", "Suburb", "Town")
+      levels = c(
+        "City",
+        "Rural",
+        "Suburb",
+        "Town"
+      )
     ),
     outcome_label = factor(
       outcome_label,
@@ -681,30 +769,37 @@ geo_results <- bind_rows(
     )
   )
 
+
 # ============================================================
-# A. CREATE COMPARISON TABLE
+# STEP 10A: GEOGRAPHIC REGRESSION COMPARISON TABLE
 # ============================================================
 
 geo_table <- geo_results |>
   mutate(
-    coefficient = ifelse(
-      locale == "City",
-      "Reference (0)",
-      sprintf("%+.2f", estimate)
+    coefficient = case_when(
+      locale == "City" ~ "Reference (0)",
+      TRUE ~ sprintf("%+.2f", estimate)
     ),
+    
     coefficient = ifelse(
       !is.na(p_value) & p_value < 0.05,
       paste0(coefficient, "*"),
       coefficient
     )
   ) |>
-  select(outcome_label, locale, coefficient) |>
+  select(
+    outcome_label,
+    locale,
+    coefficient
+  ) |>
   pivot_wider(
     names_from = locale,
     values_from = coefficient
   )
 
-print(geo_table)
+cat("\n=== GEOGRAPHIC REGRESSION COMPARISON ===\n")
+
+print(geo_table, width = Inf)
 
 write.csv(
   geo_table,
@@ -712,27 +807,64 @@ write.csv(
   row.names = FALSE
 )
 
+# Save the full coefficients and intervals for transparency
+write.csv(
+  geo_results,
+  "outputs/regressions/figures/geography_comparison_full.csv",
+  row.names = FALSE
+)
+
+
 # ============================================================
-# B. CREATE GROUPED COEFFICIENT CHART
+# STEP 10B: COMBINED GEOGRAPHIC COEFFICIENT FIGURE
 # ============================================================
 
+# Points represent estimated differences from City.
+# Horizontal zero corresponds to the City reference.
+# Error bars show 95% confidence intervals.
+# City is explicitly shown as the zero reference point.
+
+geo_plot_data <- geo_results |>
+  mutate(
+    outcome_label = factor(
+      outcome_label,
+      levels = rev(outcome_order)
+    )
+  )
+
+dodge <- position_dodge(width = 0.7)
+
 p_geo <- ggplot(
-  geo_results,
+  geo_plot_data,
   aes(
     x = outcome_label,
     y = estimate,
-    fill = locale
+    color = locale,
+    group = locale
   )
 ) +
-  geom_col(
-    position = position_dodge(width = 0.8),
-    width = 0.7
-  ) +
   geom_hline(
     yintercept = 0,
-    color = "gray40"
+    linetype = "dashed",
+    color = "gray50"
   ) +
-  scale_fill_manual(
+  geom_errorbar(
+    data = geo_plot_data |>
+      filter(locale != "City"),
+    aes(
+      ymin = ci_low,
+      ymax = ci_high
+    ),
+    width = 0.18,
+    position = dodge,
+    linewidth = 0.7
+  ) +
+  geom_point(
+    size = 2.6,
+    position = dodge
+  ) +
+  coord_flip() +
+  scale_color_manual(
     values = c(
       "City" = "#9CA3AF",
       "Rural" = "#234B70",
@@ -742,22 +874,19 @@ p_geo <- ggplot(
   ) +
   labs(
     title = "Geographic Differences in Career Readiness",
-    subtitle = "Year FE regression coefficients relative to City",
+    subtitle = "Adjusted coefficients relative to City schools",
     x = NULL,
-    y = "Adjusted difference from City (percentage points)",
-    fill = "Locale",
+    y = "Difference from City (percentage points)",
+    color = "Locale",
     caption = paste(
-      "City is the reference category (coefficient = 0).",
-      "Other school characteristics and year effects controlled for.",
-      "Standard errors clustered by school."
+      "City is the reference (coefficient = 0).",
+      "Error bars show 95% confidence intervals for",
+      "Rural, Suburb and Town.",
+      "Year fixed effects included; SE clustered by school."
     )
   ) +
   theme_minimal(base_size = 12) +
   theme(
-    axis.text.x = element_text(
-      angle = 25,
-      hjust = 1
-    ),
     legend.position = "bottom"
   )
 
@@ -771,4 +900,21 @@ ggsave(
   dpi = 300
 )
 
-cat("\nCombined geographic comparison saved!\n")
+
+# ============================================================
+# STEP 11: FINAL OUTPUT MESSAGE
+# ============================================================
+
+cat("\n============================================\n")
+cat("REGRESSION ANALYSIS COMPLETED SUCCESSFULLY\n")
+cat("============================================\n")
+
+cat("\nMain specification: Year fixed effects only\n")
+cat("Standard errors: Clustered by school\n")
+cat("Significance threshold: p < 0.05\n")
+cat("Confidence intervals: 95%\n")
+cat("Outcomes analyzed:", length(outcomes), "\n")
+
+cat("\nResults saved to:\n")
+cat("outputs/regressions/\n")
+cat("outputs/regressions/figures/\n")
